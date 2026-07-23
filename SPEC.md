@@ -1,6 +1,6 @@
 # signalk-wyoming — Specification
 
-**Status:** Draft v0.3 — RFC, community comments welcome (2026-07-23; v0.2 open questions resolved, see §12)
+**Status:** Draft v0.4 — RFC, community comments welcome (2026-07-23; v0.3 review feedback folded in, see §12)
 **Scope:** A family of SignalK plugins integrating the [Wyoming protocol](https://github.com/rhasspy/wyoming) voice-assistant ecosystem (Whisper STT, Piper TTS, openWakeWord) into SignalK, delivered as containerized microservices via signalk-container / [signalk-container-helper](https://github.com/hoeken/signalk-container-helper).
 
 ---
@@ -17,13 +17,14 @@ Decisions made during ideation and RFC review, with the deciding rationale:
 | D4 | **Notification→speech bridge is a core v1 feature** | The killer boat feature; works with zero microphones, making Piper + orchestrator alone a useful install. |
 | D5 | **Flat plugin names** (`signalk-whisper`, `signalk-piper`, `signalk-openwakeword`, `signalk-wyoming`) | Shorter than family-prefixed names; npm availability confirmed for all four. Names reserved with 0.0.1 placeholder releases. |
 | D6 | **`voice.command` publishes an object**, including `id` and `confidence` | Self-contained for node-red consumers (no `$source` parsing); `id` lets a future intents plugin correlate its reply to the utterance; `confidence` (from whisper) lets consumers drop garbage transcripts. `$source`-based filtering still works. |
-| D7 | **Endpointing v1 = satellite-side VAD + central energy gate**; silero-in-orchestrator deferred to v1.x | Upstream `wyoming-satellite` already ships silero VAD — enabling it in our image (§7) covers satellite-wake mode for free. `onnxruntime-node` is a heavy native dependency (a classic Pi install failure); an energy gate suffices for the remaining paths (central wake, push-to-talk) on short command utterances. Both sit behind one `Endpointer` interface, so the upgrade is invisible. |
+| D7 | **Endpointing v1 = orchestrator energy gate on every voice-command path**; silero-in-orchestrator is the v1 contingency, not v1.x polish *(corrected in v0.4)* | Verified against upstream source: `wyoming-satellite` **disables VAD when a wake service is configured** (`WakeStreamingSatellite` streams until the server returns a `Transcript`), and `wyoming-faster-whisper` **transcribes only on `AudioStop`** — its silero pass trims already-collected audio, it does not detect end-of-speech. Nothing upstream endpoints for us; the orchestrator must segment the stream and send `AudioStop` in *all* modes (§3.4), playing the role Home Assistant's assist pipeline plays in HA deployments. v1 uses an energy gate + timeout — `onnxruntime-node` stays out of v1 (a classic Pi install failure). Because the gate is load-bearing, the M2 spike has a hard go/no-go: <10% false-endpoint rate on ≥30 min of recorded boat audio (engine on; engine off + wind; motoring into chop). Failing it pulls silero VAD into the orchestrator **for v1**, behind the same `Endpointer` interface — correctness on boat audio is a hard requirement. |
 | D8 | **Satellite image published as `ghcr.io/hoeken/wyoming-satellite`** | ghcr.io has no anonymous pull rate limits (Docker Hub's break boat provisioning scripts) and is CI-native with GitHub Actions. The namespace avoids collision with upstream, and matching the upstream project name maximizes discoverability ("wyoming-satellite docker") — fitting the contribution-back positioning. |
 | D9 | **No armv7 in v1** (`linux/arm64` + `linux/amd64` only) | Every current Pi (Zero 2 W, 3, 4, 5) runs arm64 and 64-bit Pi OS has been the default since 2022; armv7-only hardware can't usefully run whisper anyway; Python ML wheels on armv7 are a packaging tarpit. Revisit if someone opens an issue. |
 | D10 | **Whisper defaults: `tiny-int8` + `language: en` + nautical `initialPrompt`, all v1** | A fixed language plus domain priming makes tiny far better on short commands than raw benchmarks suggest, at Pi-safe latency — while `base-int8` at 3–8 s on a Pi 4 *feels* broken. The webapp Test screen displays per-utterance latency, so every user's own hardware becomes the benchmark for upgrading the model. |
 | D11 | **Ports match the Wyoming/Home Assistant ecosystem 1:1** (10200 piper, 10300 whisper, 10400 openwakeword, 10700 satellite); control API on 10800 | Drop-in familiarity for HA users and third-party Wyoming clients. The control API has no ecosystem equivalent, so it sits adjacent to the satellite port; no conflicts with common marine stacks. |
 | D12 | **Upstream images own model downloads**; plugin readiness gated on a Wyoming `describe` handshake | Avoids duplicating upstream's model URL/version knowledge and fragile container-log parsing. Progress reporting is coarse, but the readiness signal is protocol-native — models loaded *and* service answering — and doubles as the health check (§4.3). |
 | D13 | **Test-driven development at every level**, anchored by a mock Wyoming server (§11) | Voice pipelines fail in ways end users can't debug, so correctness must be established below the audio layer. The protocol (JSONL headers + PCM payloads) is trivially fakeable, making the orchestrator fully testable in CI without containers or audio hardware. |
+| D14 | **`voice.muted` boolean ships in v1; `urgent` overrides mute** | A one-line "mute the boat" (movie night, off-watch sleep) is ~20 lines of code and high user value; quiet-hours *scheduling* stays v1.x. `urgent` announcements (including `emergency` notifications) play through mute — a mute must never silence an anchor alarm. Documented prominently so the semantics surprise no one. |
 
 ---
 
@@ -113,7 +114,14 @@ interface Satellite {
   play(audio: AudioStream, opts?: { priority?: 'normal' | 'urgent' }): Promise<void>;
   events: /* wake detections, audio stream, state changes */;
 }
+
+interface AudioStream {
+  format: { rate: number; width: number; channels: number };  // from piper's audio-start
+  chunks: AsyncIterable<Buffer>;                              // raw PCM payloads
+}
 ```
+
+`RemoteSatellite.play()` frames an `AudioStream` as Wyoming `audio-start` / `audio-chunk` / `audio-stop` events on the satellite's TCP connection — satellites never see unframed PCM.
 
 v1 ships one implementation: `RemoteSatellite` (Wyoming TCP client). The **local satellite is simply a `RemoteSatellite` pointed at `tcp://localhost:10700`** whose container lifecycle the plugin also owns. A future native in-process backend (bare-metal optimization) or a `role: satellite-only` mode slots in behind this interface with zero orchestrator changes.
 
@@ -122,15 +130,15 @@ v1 ships one implementation: `RemoteSatellite` (Wyoming TCP client). The **local
 **Voice command — satellite wake mode** (satellite drives its own wake detection):
 1. Satellite streams its mic audio to a wake service (`--wake-uri`, typically the boat's central `signalk-openwakeword`).
 2. On detection, satellite plays its awake sound locally and asks the orchestrator to run a pipeline; audio streams to the orchestrator.
-3. Orchestrator opens a `transcribe` session with whisper and forwards audio; **endpointing happens on the satellite** (its built-in VAD signals end-of-utterance, §3.4/D7).
-4. Whisper returns `transcript`; orchestrator publishes to `voice.command` (§5.1), updates state paths, satellite plays its done sound.
+3. Orchestrator opens a `transcribe` session with whisper and forwards audio. **The orchestrator endpoints** (§3.4/D7): the satellite streams until told to stop, and whisper transcribes only on `AudioStop`.
+4. On end-of-utterance the orchestrator sends whisper `AudioStop`; whisper returns `transcript`; orchestrator publishes to `voice.command` (§5.1), updates state paths, and forwards the `Transcript` to the satellite — which is what stops its streaming and triggers its done sound (upstream behavior).
 
 **Voice command — central wake mode** (dumb satellite, always streaming):
-Same, except the satellite streams continuously to the orchestrator, which tees audio to openwakeword and watches for `detection` itself — and runs its own energy-gate **endpointing** (§3.4), since a continuously-streaming satellite can't signal end-of-utterance. Trades continuous LAN audio (~256 kbit/s/satellite raw PCM) and server CPU for simpler satellites.
+Same, except the satellite streams continuously to the orchestrator, which tees audio to openwakeword and watches for `detection` itself; endpointing is the same orchestrator gate (§3.4). Trades continuous LAN audio (~256 kbit/s/satellite raw PCM) and server CPU for simpler satellites — prefer `wakeMode: satellite` for multi-satellite deployments; central mode is primarily for satellites that can't run wake detection.
 
 **Announcement:**
 1. `say()` invoked (REST / PUT / PropertyValues / notification bridge).
-2. Orchestrator sends `synthesize` to piper, receives `audio-start/chunk/stop`.
+2. Orchestrator sends `synthesize` to piper, receives `audio-start/chunk/stop`. One synthesis per unique voice per announcement: the default voice synthesizes once and fans out to all targets; a per-satellite voice override (v1.x) synthesizes separately for that satellite only.
 3. Audio streams to each target satellite's per-satellite FIFO queue; `priority: 'urgent'` jumps the queue. State paths update (`speaking`).
 
 **Notification bridge:**
@@ -138,11 +146,19 @@ Same, except the satellite streams continuously to the orchestrator, which tees 
 
 ### 3.4 Endpointing (utterance segmentation)
 
-Decided (D7) — **no ML VAD in the orchestrator for v1**:
+Decided (D7, corrected in v0.4 after reading upstream source) — **the orchestrator endpoints every voice-command path in v1**, because nothing upstream does it for us:
 
-- **Satellite wake mode:** endpointing happens on the satellite. Upstream `wyoming-satellite` ships silero VAD; our image enables it by default (§7). The satellite signals end-of-utterance; the orchestrator just relays.
-- **Central wake mode & push-to-talk:** the orchestrator runs an **energy gate + timeout** endpointer. Tunables (advanced config, §5.4): `silenceMs` (default 800), `maxUtteranceMs` (10000), `minUtteranceMs` (300).
-- Both paths feed one internal `Endpointer` interface. Silero via `onnxruntime-node` is the v1.x upgrade behind that interface if the energy gate proves inadequate — the M2 spike validates it against real boat audio (engine noise, wind).
+- `wyoming-satellite` **disables VAD when a wake service is configured** (logs "VAD is not used with local wake word detection"); after a wake detection, `WakeStreamingSatellite` streams until the server sends back a `Transcript` or `Error`.
+- `wyoming-faster-whisper` **transcribes only when it receives `AudioStop`**; its internal silero pass trims silence from already-collected audio — it does not detect end-of-speech in a live stream. (In Home Assistant deployments, HA's assist pipeline runs the VAD segmenter; our orchestrator plays that role.)
+
+| Mode | Who endpoints | Mechanism |
+|------|---------------|-----------|
+| Satellite wake (`--wake-uri`) | **Orchestrator** | Energy gate + timeout on the post-wake stream → sends whisper `AudioStop` → relays the resulting `Transcript` to the satellite, which stops streaming on it |
+| Central wake (always-streaming) | **Orchestrator** | Same gate, applied after the orchestrator's own wake detection |
+| Push-to-talk (webapp) | **Orchestrator** | Same gate; button release also forces end-of-utterance |
+| Satellite VAD mode (`--vad`, no wake service) | Satellite (silero) | Not used by any v1 configuration; the image supports it for standalone/upstream-style use |
+
+Tunables (advanced config, §5.4): `silenceMs` (default 800), `maxUtteranceMs` (10000), `minUtteranceMs` (300). All paths feed one internal `Endpointer` interface. **Contingency (D7):** if the M2 spike fails its go/no-go (<10% false-endpoint rate on ≥30 min of real boat audio: engine on; engine off + wind; motoring into chop), silero VAD via `onnxruntime-node` replaces the energy gate behind the same interface **in v1**.
 
 ### 3.5 Concurrency & interruption semantics
 
@@ -159,6 +175,12 @@ Voice systems earn their reputation for jank where queues, wake events, and alar
 **Wake dedup across satellites** — open companionways mean two satellites routinely hear the same wake word: after accepting a wake event, wake events from *other* satellites are ignored for `wakeDedupMs` (default 2000). Detections arriving within a 300 ms window are resolved by highest detection score.
 
 **Pipeline timeout:** a pipeline that hasn't produced a transcript within `pipelineTimeoutMs` (default 30000) is aborted — e.g. a hung whisper session — returning the satellite to `idle` and surfacing the error per §4.3.
+
+### 3.6 Audio format conventions
+
+- **Mic/STT path:** satellites capture 16 kHz, 16-bit, mono (upstream default; whisper's native rate). `wyoming-faster-whisper` additionally resamples on ingest (`AudioChunkConverter`), so a nonconforming source degrades gracefully rather than failing.
+- **TTS/playback path:** piper outputs 22 050 Hz, 16-bit, mono; the satellite image's playback command is configured for 22 050 Hz to match natively. A future TTS provider at a different rate requires matching satellite `snd` settings.
+- The orchestrator performs **no resampling** — Wyoming `audio-start` events carry `rate/width/channels`, and each hop honors them.
 
 ---
 
@@ -179,6 +201,8 @@ app.emitPropertyValue('wyoming-service', {
 
 PropertyValues replays history to late subscribers, so start order never matters. Consumers keep the **latest value per `plugin`**. Plugins emit again on every status change (including `stopped` in their `stop()` hook). Third-party plugins may advertise additional Wyoming services under the same convention.
 
+**Emission discipline:** the server enforces a **global** cap (`MAX_VALUES_COUNT = 1000`, counted across *all* property names) and `emitPropertyValue` **throws** once it's hit — for every plugin in the process, not just the offender. Plugins therefore emit only on meaningful state transitions and debounce flaps (error → ready → error within ~500 ms collapses to a single emission); pathological status churn is logged as a warning instead of emitted.
+
 The orchestrator's service config defaults to `auto` (use discovery) with manual `tcp://host:port` overrides — so an off-boat GPU box or an existing Home Assistant add-on can be used instead of the sibling plugins.
 
 ### 4.2 Model management (offline-first)
@@ -191,7 +215,7 @@ The orchestrator's service config defaults to `auto` (use discovery) with manual
 
 ### 4.3 Error surfacing & health
 
-- **Health checks are protocol-native:** each owning plugin sends a periodic Wyoming `describe` ping and requires a valid `info` response (same mechanism as the §4.2 readiness gate). The `info` response's protocol version is validated, with a logged warning on unrecognized versions — images are pinned, but upstream protocol drift should be loud, not mysterious.
+- **Health checks are protocol-native:** each owning plugin sends a periodic Wyoming `describe` ping and requires a valid `info` response (same mechanism as the §4.2 readiness gate). The `info` response's protocol version is validated (target: Wyoming protocol **1.x**; versions outside 1.x log a loud warning but do not block operation) — images are pinned, but upstream protocol drift should be loud, not mysterious.
 - Service unreachable / unhealthy → SignalK notification `notifications.voice.<service>` (state `alarm`), plus plugin status text.
 - `say()` with piper down → immediate error result (REST 503 / PUT failure / rejected promise), never a silent drop (see §5.2 for partial-failure semantics).
 - All containers use container-helper restart policies; offline Docker-pull failures are non-fatal per helper conventions.
@@ -206,10 +230,11 @@ Custom `voice.*` branch (outside the SignalK schema — normal plugin practice):
 
 | Path | Value | Notes |
 |------|-------|-------|
-| `voice.command` | `{ id, text, confidence, satellite, zone?, language, wakeWord?, durationMs? }` | One delta per utterance (D6). `id` is a UUID for correlating replies; `confidence` comes from whisper (consumers should ignore low-confidence transcripts). `$source` = `signalk-wyoming.<satelliteId>` so source-based filtering also works. To reply to the originating satellite: `say({ text, targets: [command.satellite] })`. |
+| `voice.command` | `{ id, text, confidence, filtered?, satellite, zone?, language, wakeWord?, durationMs? }` | One delta per utterance (D6). `id` is a UUID for correlating replies; `confidence` comes from whisper. Transcripts below `advanced.minConfidence` (§5.4) are still published but flagged `filtered: true` — visible for debugging, trivial for consumers to skip. `$source` = `signalk-wyoming.<satelliteId>` so source-based filtering also works. To reply to the originating satellite: `say({ text, targets: [command.satellite] })`. |
 | `voice.satellites.<id>.connected` | `boolean` | |
 | `voice.satellites.<id>.state` | `'idle' \| 'listening' \| 'transcribing' \| 'speaking'` | |
 | `voice.say` | write-only PUT target | See §5.2 |
+| `voice.muted` | `boolean`, PUT-able | D14. `true` suppresses the notification bridge and `priority: 'normal'` announcements; `urgent` (including `emergency` notifications) plays through. Defaults to `false`; not persisted across restarts. |
 
 ### 5.2 The `say()` surface (all three delegate to one internal function)
 
@@ -229,7 +254,9 @@ Semantics (shared by all three surfaces):
 - The promise resolves on **enqueue**, not playback completion. `queued` lists the satellites the audio was queued to; `errors` lists per-satellite failures (disconnected, queue full). `ok` is `true` iff every effective target was queued.
 - **Partial failure resolves** (`ok: false`, both arrays populated) — it never rejects. Callers who care check `errors`; fire-and-forget callers aren't punished for one dead satellite.
 - It rejects (REST 503 / PUT failure) only when **nothing** could be queued: TTS unavailable, or zero reachable targets.
-- `wait: true` (resolve on playback completion, for node-red sequencing) is reserved for v1.x — the field is honored-or-rejected, never silently ignored.
+- `text` is capped at `maxTextLength` characters (default 500, advanced config §5.4); longer input is truncated with `…` and a logged warning — one malformed notification can't monopolize the queue.
+- While `voice.muted` is `true` (D14): `priority: 'normal'` calls resolve `{ ok: false, queued: [], suppressed: 'muted' }` — nothing queued, not an error; `urgent` bypasses mute.
+- `wait: true` (resolve on playback completion, for node-red sequencing) is reserved for v1.x — the field is honored-or-rejected, never silently ignored. In v1 it rejects with `{ ok: false, error: "wait:true is not supported in v1; poll voice.satellites.<id>.state" }`.
 
 1. **REST** (respects SignalK write auth):
    - `POST /plugins/signalk-wyoming/api/say` — body is `opts`; 202 + result when ≥1 target queued, 503 when none
@@ -262,8 +289,9 @@ Behavior:
 
 - Speak on state *transitions* into qualifying states — no re-speak of unchanged notifications; escalation to a higher state re-speaks.
 - **Flap protection:** the per-path cooldown suppresses re-speaking the same notification path within `cooldownSeconds` — a bouncing sensor toggling normal↔alarm speaks once a minute, not once a second. Escalation to a *higher* state bypasses the cooldown (a flap should not mute an emergency).
-- **Startup:** alarms already active when the plugin starts are exactly what a user rebooting the server needs to hear. After a settle delay (`startupGraceMs`, default 10000, advanced — lets the notification tree repopulate), qualifying active notifications are spoken once as a single summary ("Active alarms: anchor drag, engine temperature"). Disable via `announceActiveOnStartup: false`.
-- `emergency` maps to `priority: 'urgent'`. Spoken text is the notification's `message`, falling back to a path-derived phrase. Quiet hours and repeat/nag policies are v1.x (§10).
+- **Startup:** alarms already active when the plugin starts are exactly what a user rebooting the server needs to hear. After a settle delay (`startupGraceMs`, default 10000, advanced — lets the notification tree repopulate), qualifying active notifications are spoken once as a single summary ("Active alarms: anchor drag, engine temperature"). The summary uses the same `targets`/`zones` resolution as normal announcements. Disable via `announceActiveOnStartup: false`.
+- `emergency` maps to `priority: 'urgent'`. Spoken text is the notification's `message`, falling back to a path-derived phrase: strip the `notifications.` prefix, take the last 2–3 segments, split camelCase/snake_case, join with spaces, capitalize (`notifications.navigation.anchor.alarmState` → "Anchor alarm state"; `notifications.bilge.forward.highWater` → "Forward high water").
+- While `voice.muted` is `true` (D14), bridge announcements are suppressed — except `emergency`, which maps to `urgent` and plays through. Quiet hours and repeat/nag policies are v1.x (§10).
 
 ### 5.4 Satellites config
 
@@ -283,9 +311,15 @@ services: { asr: 'auto'|uri, tts: 'auto'|uri, wake: 'auto'|uri }
 defaults: { language: 'en', voice: /* piper voice */ }
 advanced: {                              // §3.4/§3.5 tunables; defaults shown
   silenceMs: 800, maxUtteranceMs: 10000, minUtteranceMs: 300,
-  wakeDedupMs: 2000, pipelineTimeoutMs: 30000, startupGraceMs: 10000
+  wakeDedupMs: 2000, pipelineTimeoutMs: 30000, startupGraceMs: 10000,
+  minConfidence: 0.0,                    // §5.1: below this, voice.command gets filtered: true
+  maxTextLength: 500                     // §5.2: say() text cap
 }
 ```
+
+Satellite `id`s must match `^[a-zA-Z0-9_-]+$` (validated at config load, with a clear error) — an `id` becomes a SignalK path segment (`voice.satellites.<id>`) and a REST URL component (`/api/satellites/:id/test`).
+
+**Local satellite container lifecycle:** started on plugin start, stopped in the plugin's `stop()` hook — disabling the orchestrator never leaves an orphaned open microphone. Restart policy is `unless-stopped`: on a SignalK/host restart the container comes back on its own and the orchestrator reconnects; if the orchestrator crashes without its `stop()` hook running, the satellite keeps running and is re-adopted on the next plugin start.
 
 Degraded modes are first-class: TTS-only (no whisper — announcements only, the recommended starter install), STT-only (no piper — commands published, no spoken replies). `wakeMode: central` or a wake-enabled local satellite without openwakeword available → config-time warning + `notifications.voice.wake` at runtime.
 
@@ -295,7 +329,7 @@ One webapp, four screens. This is the answer to "audio config is frustrating":
 
 1. **Status** — satellites (connection/state), services (health, model info), recent commands/announcements log.
 2. **Audio setup** — device **dropdowns** (populated from the satellite image's control endpoint, §7), *record 3 s & play back* button, *play tone* button, live VU meter (websocket). No free-text ALSA device strings unless the user opens "advanced".
-3. **Test** — type-and-say box (target picker), **push-to-talk** button (browser mic → orchestrator → whisper; doubles as the STT test before any wake word exists — note browsers require HTTPS or localhost for `getUserMedia`), wake-word test with live detection feedback. Displays **per-utterance transcription latency** — the real-hardware benchmark for choosing a whisper model (D10).
+3. **Test** — type-and-say box (target picker, voice picker populated from piper's `info` response via `GET .../api/services`), **push-to-talk** button (browser mic → orchestrator → whisper; doubles as the STT test before any wake word exists), wake-word test with live detection feedback. Displays **per-utterance transcription latency** — the real-hardware benchmark for choosing a whisper model (D10). `getUserMedia` requires a secure context: localhost works out of the box, but remote access (tablet in the cockpit) needs SignalK behind TLS. The webapp detects an insecure context and says so — "Push-to-talk requires HTTPS; use the satellite's record/playback test (§7) instead" — the satellite control API is the HTTPS-free path for audio testing.
 4. **Config** — friendlier editor for the plugin config (the JSON-schema auto-UI degrades at this schema size).
 
 ---
@@ -310,7 +344,7 @@ Common to all three (via container-helper `buildConfig()`): image tag (default p
 |-------|---------|-----------------|
 | `model` | `tiny-int8` | `base-int8` recommended for Pi 5 / x86 — the webapp Test screen's latency display guides the choice (D10) |
 | `language` | `en` | `auto` supported but costs both speed and accuracy on small models (D10) |
-| `initialPrompt` | shipped nautical prompt ("genoa", "windlass", "gybe", …) | user-editable; cheapest accuracy win available, so it's v1, not stretch (D10) |
+| `initialPrompt` | shipped nautical prompt ("genoa", "windlass", "gybe", …) | user-editable; cheapest accuracy win available, so it's v1, not stretch (D10). README documents it with examples to add: vessel name, local port names, boat-specific gear |
 | `port` | 10300 | |
 | — | | stretch: `beamSize`, `computeType`, GPU |
 
@@ -341,15 +375,15 @@ Common to all three (via container-helper `buildConfig()`): image tag (default p
 - **Contents:** upstream `wyoming-satellite` (pinned release) + `alsa-utils`, on a slim Debian/Python base. MIT, with attribution.
 - **Arch:** `linux/arm64`, `linux/amd64`. No armv7 in v1 (D9); README says "open an issue if you need it".
 - **Ports:** `:10700` Wyoming satellite protocol; `:10800` control API.
-- **Single Wyoming client:** the satellite accepts one Wyoming connection at a time; further attempts are refused while one is held. This is a deliberate security property (§9) — whoever holds the connection owns the microphone, and the orchestrator's always-held connection occupies the slot, locking out rogue LAN clients.
+- **Single Wyoming client:** the satellite accepts one Wyoming connection at a time; further attempts are refused while one is held. This is a deliberate security property (§9, including the reconnect-window caveat) — whoever holds the connection owns the microphone, and the orchestrator's always-held connection occupies the slot, locking out rogue LAN clients.
 - **Control API** (the audio-UX enabler, identical across all deployment scenarios):
   - `GET /devices` — parsed `arecord -l` / `aplay -l`
   - `POST /test/record` — record N seconds, return WAV
-  - `POST /test/play` — tone or uploaded WAV
+  - `POST /test/play` — `{ type: 'tone', frequency?: 440, durationMs?: 2000 }` (defaults: 440 Hz sine, 2 s) or `{ type: 'wav', data: '<base64>' }`
   - `GET /vu` — websocket/SSE stream of mic RMS levels
   - `GET /health`
-- **Env config:** `MIC_DEVICE`, `SND_DEVICE`, `WAKE_URI`, `VAD`, `NOISE_SUPPRESSION`, `AUTO_GAIN`, `MIC_VOLUME`, `AWAKE_WAV`/`DONE_WAV` (defaults baked in, overridable via data mount).
-- Runs upstream's VAD / noise-suppression / auto-gain — the Python audio stack we chose not to reimplement in Node (D2). **VAD is enabled by default**: it provides satellite-side endpointing (D7, §3.4).
+- **Env config:** `MIC_DEVICE`, `SND_DEVICE`, `WAKE_URI`, `WAKE_REFRACTORY_SECONDS` (default 3.0 — shorter than upstream's 5.0 for conversational follow-up commands), `VAD`, `NOISE_SUPPRESSION`, `AUTO_GAIN`, `MIC_VOLUME`, `AWAKE_WAV`/`DONE_WAV` (defaults baked in, overridable via data mount).
+- Runs upstream's noise-suppression / auto-gain — the Python audio stack we chose not to reimplement in Node (D2). **`VAD` is a no-op when `WAKE_URI` is set** — upstream disables it in wake mode (§3.4/D7); it applies only to standalone VAD-mode use of the image (no wake service).
 
 ---
 
@@ -370,7 +404,7 @@ Principle: **audio never touches the SignalK process.** Whisper/piper/openwakewo
 
 - REST/PUT respect SignalK's access control (write permission for `say`, admin for config). Webapp config screens require admin.
 - **Wyoming has no authentication, and a satellite is an open live microphone.** Any client that can reach a satellite's `:10700` can connect and stream cabin audio — treat every satellite port like a baby monitor, and say so bluntly in the READMEs. Mitigations:
-  - Our satellite image accepts a **single Wyoming client** at a time, and the orchestrator's always-held connection occupies that slot (§7) — a rogue client on the LAN finds the mic busy.
+  - Our satellite image accepts a **single Wyoming client** at a time, and the orchestrator's always-held connection occupies that slot (§7) — a rogue client on the LAN finds the mic busy. **Honest gap:** the slot is held only while the TCP connection is live; upstream clears its `server_id` on disconnect and lets the next client take over, so a rogue client can seize the mic during the reconnect window after a drop. Mitigations: the orchestrator's first reconnect attempt is near-immediate (backoff ramps only on repeated failure); VLAN/firewall isolation of satellite ports; v1.x candidate: shared-secret handshake validation in our image.
   - whisper/piper bind to localhost/docker network by default (only the orchestrator needs them).
   - openwakeword must be LAN-reachable only if remote satellites use `wakeMode: satellite` — called out in the config UI.
   - Documentation ships a firewalling + WireGuard/VLAN recipe for marina wifi and multi-AP boats.
@@ -381,20 +415,20 @@ Principle: **audio never touches the SignalK process.** Whisper/piper/openwakewo
 ## 10. Roadmap
 
 **M0 — Foundations (prerequisites, other repos — signalk-container-helper is ours and developed in parallel, so these are coordination items, not external risks):**
-- signalk-container + helper: `devices: ['/dev/snd']`, `groupAdd: ['audio']` in `buildConfig()`; hot-plug handled properly (`device-cgroup-rule` + `/dev/snd` bind-mount rather than static `--device`) — generally useful beyond audio (serial/GPS dongles).
+- signalk-container + helper: `devices: ['/dev/snd']`, `groupAdd: ['audio']` in `buildConfig()`; hot-plug handled properly (`device-cgroup-rule` + `/dev/snd` bind-mount rather than static `--device`) — generally useful beyond audio (serial/GPS dongles). The plugins pin the minimum signalk-container-helper version that ships these (exact version set when M0 closes).
 - Satellite image repo + multi-arch CI + control API.
 - Mock Wyoming server test package (§11) — needed before the first line of orchestrator code (D13).
 - ~~Reserve npm names~~ Done — 0.0.1 placeholders published without the `signalk-node-server-plugin` keyword, so they stay out of the app store until a functional release.
 
-**M1 — "The boat talks"** (useful with zero microphones): `signalk-piper`; orchestrator with `say()` core (REST + PUT + PropertyValues), local satellite (output-only), **notification bridge**, status paths, webapp Status + basic Test screens.
+**M1 — "The boat talks"** (useful with zero microphones): `signalk-piper`; orchestrator with `say()` core (REST + PUT + PropertyValues), `voice.muted` (D14), local satellite (output-only), **notification bridge**, status paths, webapp Status + basic Test screens.
 
-**M2 — "The boat listens":** `signalk-whisper`; pipeline engine + energy-gate endpointer, with a spike validating it against real boat audio (engine noise, wind — D7); webapp push-to-talk and record/playback screens; `voice.command` publishing. (PTT makes STT testable before wake words exist.)
+**M2 — "The boat listens":** `signalk-whisper`; pipeline engine + energy-gate endpointer, with a spike validating it against real boat audio under the D7 go/no-go (<10% false-endpoint rate: engine on; engine off + wind; motoring into chop — failing pulls silero into v1); webapp push-to-talk and record/playback screens; `voice.command` publishing. (PTT makes STT testable before wake words exist.)
 
 **M3 — "Hands-free":** `signalk-openwakeword`; both wake modes; feedback sounds; wake test UI.
 
 **M4 — "Whole-boat":** remote satellites hardened (reconnect/backoff soak testing), zones/targets, queue polish, Pi satellite recipe docs.
 
-**v1.x candidates:** quiet hours + repeat/nag policy for the bridge; `say({ wait: true })` (resolve on playback completion); silero VAD endpointer in the orchestrator (D7); priority queue refinement; per-satellite voices; mDNS "scan for satellites"; custom wake-word model upload.
+**v1.x candidates:** quiet hours + repeat/nag policy for the bridge (building on `voice.muted`, D14); `say({ wait: true })` (resolve on playback completion); silero VAD endpointer in the orchestrator, if the M2 go/no-go didn't already pull it into v1 (D7); shared-secret handshake in the satellite image (§9); priority queue refinement; per-satellite voices; mDNS "scan for satellites"; custom wake-word model upload.
 
 **Stretch:** browser satellite webapp (`getUserMedia` → websocket satellite; zero audio config on any tablet — needs HTTPS); `role: satellite-only` mode; native in-process local satellite (bare-metal desktop optimization behind the `Satellite` seam); streaming TTS; Snapcast as an announce target; intents/LLM assistant as a **separate plugin** consuming `voice.command` + `signalk-wyoming.api`; GPU whisper.
 
@@ -415,6 +449,8 @@ Every PR runs unit + protocol suites; integration runs on merge; a release requi
 
 ---
 
-## 12. Resolved questions (v0.2 RFC)
+## 12. Resolved questions
 
-All seven open questions from v0.2 are resolved and folded into the decision log: `voice.command` shape → D6, VAD choice → D7, image registry/name → D8, armv7 → D9, whisper default model → D10, ports → D11. Q7 (signalk-container availability) is moot — signalk-container-helper is developed by us, in parallel (M0).
+**v0.2 RFC:** all seven open questions resolved and folded into the decision log: `voice.command` shape → D6, VAD choice → D7, image registry/name → D8, armv7 → D9, whisper default model → D10, ports → D11. Q7 (signalk-container availability) is moot — signalk-container-helper is developed by us, in parallel (M0).
+
+**v0.3 RFC review (→ v0.4):** the review's endpointing finding was verified against upstream source and corrected — with a different mechanism than the review proposed: `wyoming-satellite` disables VAD in wake mode *and* `wyoming-faster-whisper` transcribes only on `AudioStop`, so the **orchestrator** endpoints all paths (D7, §3.4) — the review's claim that whisper endpoints internally is wrong (its silero pass only trims collected audio). Also folded in: single-client reconnect gap (§9), PropertyValues global cap discipline (§4.1), `AudioStream` definition (§3.2), audio format conventions (§3.6), local-satellite container lifecycle + satellite `id` validation (§5.4), `voice.muted` → D14, plus config/interface tightening throughout (`minConfidence`, `maxTextLength`, `wait:true` rejection shape, path-to-text algorithm, HTTPS/PTT guidance, tone params, wake refractory default, protocol version target, helper version pin).
