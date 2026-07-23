@@ -21,7 +21,7 @@ All services run as containers managed through signalk-container / [signalk-cont
 
 ## Read the spec
 
-**[SPEC.md](SPEC.md)** covers the architecture, decisions made (and why), plugin configuration, the `voice.*` path schema, the `say()` API surface, audio configuration strategy, and the roadmap. [IDEA.md](IDEA.md) is the original ideation doc, kept for provenance.
+**[SPEC.md](SPEC.md)** covers the architecture, plugin configuration, the `voice.*` path schema, the `say()` API surface, audio configuration strategy, and the roadmap. **[DECISIONS.md](DECISIONS.md)** records the design decisions (and why) plus the RFC history. [IDEA.md](IDEA.md) is the original ideation doc, kept for provenance.
 
 Feedback is very welcome — especially from anyone who has fought boat audio, runs Signal K in a container, or uses Wyoming satellites with Home Assistant.
 
