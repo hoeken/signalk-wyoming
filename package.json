@@ -1,0 +1,29 @@
+{
+  "name": "signalk-wyoming",
+  "version": "0.0.1",
+  "description": "Wyoming protocol voice assistant orchestrator for Signal K — voice commands in, spoken announcements out. Pre-release placeholder.",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "README.md",
+    "SPEC.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "wyoming",
+    "voice-assistant",
+    "voice",
+    "speech",
+    "marine",
+    "boat"
+  ],
+  "author": "hoeken",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hoeken/signalk-wyoming.git"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
