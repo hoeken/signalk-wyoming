@@ -223,7 +223,7 @@ say(opts: {
 
 Semantics (shared by all three surfaces):
 
-- `targets` lists satellite ids; omitting it means all satellites. (`zones` — named satellite groups — is v1.x; it will be a **separate field** from `targets`, so adding it is backward-compatible and a satellite id and a zone name never compete in one namespace.)
+- `targets` lists satellite ids; omitting it means all satellites.
 - The promise resolves on **enqueue**, not playback completion. `queued` lists the satellites the audio was queued to; `errors` lists per-satellite failures (disconnected, queue full). `ok` is `true` iff every effective target was queued.
 - **Partial failure resolves** (`ok: false`, both arrays populated) — it never rejects. Callers who care check `errors`; fire-and-forget callers aren't punished for one dead satellite.
 - It rejects (REST 503 / PUT failure) only when **nothing** could be queued: TTS unavailable, or zero reachable targets.
@@ -351,7 +351,7 @@ Common to all three (via container-helper `buildConfig()`): image tag (default p
   - `GET /devices` — parsed `arecord -l` / `aplay -l`
   - `POST /test/record` — record N seconds, return WAV
   - `POST /test/play` — `{ type: 'tone', frequency?: 440, durationMs?: 2000 }` (defaults: 440 Hz sine, 2 s) or `{ type: 'wav', data: '<base64>' }`
-  - `GET /vu` — websocket/SSE stream of mic RMS levels
+  - `GET /vu` — SSE stream of mic RMS levels
   - `GET /health`
 - **Env config:** `MIC_DEVICE`, `SND_DEVICE`, `WAKE_URI`, `WAKE_REFRACTORY_SECONDS` (default 3.0 — shorter than upstream's 5.0 for conversational follow-up commands), `VAD`, `NOISE_SUPPRESSION`, `AUTO_GAIN`, `MIC_VOLUME`, `AWAKE_WAV`/`DONE_WAV` (defaults baked in, overridable via data mount).
 - Runs upstream's noise-suppression / auto-gain — the Python audio stack we chose not to reimplement in Node (D2). **`VAD` is a no-op when `WAKE_URI` is set** — upstream disables it in wake mode (§2.4/D7); it applies only to standalone VAD-mode use of the image (no wake service).
@@ -399,7 +399,7 @@ Principle: **audio never touches the SignalK process.** Whisper/piper/openwakewo
 
 **M4 — "Whole-boat":** remote satellites hardened (reconnect/backoff soak testing), queue polish, Pi satellite recipe docs.
 
-**v1.x candidates:** quiet hours + repeat/nag policy for the bridge (building on `voice.muted`, D14); `say({ wait: true })` (resolve on playback completion); silero VAD endpointer in the orchestrator, if the M2 go/no-go didn't already pull it into v1 (D7); central wake mode for satellites that can't run wake streaming (D15); zones (named satellite groups — a separate `say()` field, backward-compatible); webapp config editor (the JSON-schema auto-UI degrades at this schema size); shared-secret handshake in the satellite image (§8); priority queue refinement; per-satellite voices; mDNS "scan for satellites"; custom wake-word model upload.
+**v1.x candidates:** quiet hours + repeat/nag policy for the bridge (building on `voice.muted`, D14); `say({ wait: true })` (resolve on playback completion); silero VAD endpointer in the orchestrator, if the M2 go/no-go didn't already pull it into v1 (D7); central wake mode for satellites that can't run wake streaming (D15); webapp config editor (the JSON-schema auto-UI degrades at this schema size); shared-secret handshake in the satellite image (§8); priority queue refinement; per-satellite voices; mDNS "scan for satellites"; custom wake-word model upload.
 
 **Stretch:** browser satellite webapp (`getUserMedia` → websocket satellite; zero audio config on any tablet — needs HTTPS; subsumes browser push-to-talk, the same capture path); `role: satellite-only` mode; native in-process local satellite (bare-metal desktop optimization behind the `Satellite` seam); streaming TTS; Snapcast as an announce target; intents/LLM assistant as a **separate plugin** consuming `voice.command` + `signalk-wyoming.api`; GPU whisper.
 
@@ -411,9 +411,10 @@ Built test-driven, with tests at every level (D13). A voice pipeline that fails 
 
 | Level | What | How |
 |-------|------|-----|
+| **Static** | Code style and lint errors never reach review | **ESLint + Prettier** checks in CI on every PR; a pre-commit hook (husky + lint-staged) auto-formats staged files locally |
 | **Unit** | Notification-bridge state machine (transitions, cooldown, startup replay), queue / priority / interruption rules (§2.5), endpointer, target resolution, config validation | Plain Node tests with fake timers; no I/O |
 | **Protocol** | Orchestrator's Wyoming client, pipeline flows end-to-end, `describe` health checks, satellite reconnect/backoff | **Mock Wyoming server** — the protocol is JSONL headers + PCM payloads; a scriptable fake (canned transcripts, injectable delays/disconnects) is ~100 lines. Published as a shared dev package used by all four plugins. |
 | **Integration** | Service plugins boot their real images, models load, `describe` succeeds; satellite image control API (record/play/VU assertions) | CI with Docker on amd64 every merge; periodic arm64 runs |
 | **Hardware / manual** | Real mics, speakers, echo, engine noise | The webapp Test screens (§4.5) *are* the manual rig — record-and-transcribe, record/playback, wake test, latency display |
 
-Every PR runs unit + protocol suites; integration runs on merge; a release requires the integration suite green on arm64.
+**CI:** each repo runs the standard SignalK plugin **`signalk-ci.yml`** GitHub Actions workflow (build, lint, and test across supported Node versions), extended with the Docker integration jobs above. Every PR runs lint/format + unit + protocol suites; integration runs on merge; a release requires the integration suite green on arm64.
