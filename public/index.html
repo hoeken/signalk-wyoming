@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Voice (Wyoming) — Signal K</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Voice <span class="dim">signalk-wyoming</span></h1>
+      <nav id="tabs" role="tablist">
+        <button role="tab" data-screen="status" aria-selected="true">
+          Status
+        </button>
+        <button role="tab" data-screen="audio" aria-selected="false">
+          Audio
+        </button>
+        <button role="tab" data-screen="test" aria-selected="false">
+          Test
+        </button>
+      </nav>
+      <div id="sse-dot" class="dot dot-unknown" title="live event stream"></div>
+    </header>
+
+    <div id="banner" class="banner hidden"></div>
+
+    <main>
+      <section id="screen-status" class="screen"></section>
+      <section id="screen-audio" class="screen hidden"></section>
+      <section id="screen-test" class="screen hidden"></section>
+    </main>
+
+    <footer class="dim">
+      Configuration is edited in the Signal K plugin config UI (Server → Plugin
+      Config → Voice (Wyoming)). This webapp is for status and testing.
+    </footer>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

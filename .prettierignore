@@ -1,0 +1,8 @@
+dist/
+node_modules/
+package-lock.json
+
+# Pre-existing docs carried over from the placeholder release; kept verbatim.
+SPEC.md
+DECISIONS.md
+IDEA.md
