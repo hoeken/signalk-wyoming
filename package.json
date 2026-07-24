@@ -35,7 +35,16 @@
     "lint": "eslint --fix",
     "format": "npm run prettier && npm run lint",
     "ci-lint": "eslint && prettier --check .",
+    "prepare": "husky || true",
+    "release": "git tag -d v$npm_package_version; git tag v$npm_package_version && git push && git push origin v$npm_package_version",
     "prepublishOnly": "npm run build && npm test"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{js,json,md,yml,css,html}": "prettier --write"
   },
   "keywords": [
     "wyoming",
@@ -72,6 +81,8 @@
     "eslint": "^10.2.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.4.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
     "prettier": "^3.8.1",
     "typescript": "^5.5.0",
     "typescript-eslint": "^8.58.0",
