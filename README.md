@@ -4,7 +4,7 @@
 
 An offline voice assistant for your boat, built on [Signal K](https://signalk.org) and the [Wyoming protocol](https://github.com/rhasspy/wyoming) (the voice ecosystem behind Home Assistant's Assist: Whisper, Piper, openWakeWord).
 
-- **The boat talks:** any plugin, node-red flow, or API client can speak through satellites anywhere on the boat — and Signal K notifications (anchor alarm, engine temperature, AIS proximity) are spoken automatically.
+- **The boat talks:** any plugin, node-red flow, or API client can speak through satellites anywhere on the boat via a simple `say()` API (anchor alarms, engine warnings, arrival announcements — whatever your plugins send).
 - **The boat listens:** wake-word-triggered voice commands are transcribed and published to a subscribable Signal K path (`voice.command`) for anything to consume.
 - **Fully offline.** No cloud. Everything runs in containers on the boat.
 
@@ -12,7 +12,7 @@ An offline voice assistant for your boat, built on [Signal K](https://signalk.or
 
 | Plugin | Role | Standalone? |
 |--------|------|-------------|
-| [signalk-wyoming](https://github.com/hoeken/signalk-wyoming) | Orchestrator: pipelines, satellite manager, TTS routing, notification→speech bridge, `voice.*` paths, webapp | needs the services below |
+| [signalk-wyoming](https://github.com/hoeken/signalk-wyoming) | Orchestrator: pipelines, satellite manager, TTS routing, `voice.*` paths, webapp | needs the services below |
 | [signalk-whisper](https://github.com/hoeken/signalk-whisper) | Speech-to-text (Wyoming Whisper) | ✅ usable by any Wyoming client, incl. Home Assistant |
 | [signalk-piper](https://github.com/hoeken/signalk-piper) | Text-to-speech (Wyoming Piper) | ✅ |
 | [signalk-openwakeword](https://github.com/hoeken/signalk-openwakeword) | Wake word detection (Wyoming openWakeWord) | ✅ |

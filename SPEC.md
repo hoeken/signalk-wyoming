@@ -1,8 +1,8 @@
 # signalk-wyoming — Specification
 
-**Status:** Draft v0.5 — RFC, community comments welcome (2026-07-23)
+**Status:** Draft v0.6 — RFC, community comments welcome (2026-07-24)
 **Scope:** A family of SignalK plugins integrating the [Wyoming protocol](https://github.com/rhasspy/wyoming) voice-assistant ecosystem (Whisper STT, Piper TTS, openWakeWord) into SignalK, delivered as containerized microservices via signalk-container / [signalk-container-helper](https://github.com/hoeken/signalk-container-helper).
-**Rationale & history:** design decisions and RFC evolution live in [DECISIONS.md](DECISIONS.md), referenced here as (D1)…(D15).
+**Rationale & history:** design decisions and RFC evolution live in [DECISIONS.md](DECISIONS.md), referenced here as (D1)…(D16).
 
 ---
 
@@ -12,7 +12,7 @@
 
 Voice in and voice out for a boat's SignalK server, fully offline:
 
-- **Voice out:** any plugin, node-red flow, or API client can make the boat speak ("Anchor alarm: drag detected") through speakers anywhere on the boat. SignalK notifications are spoken automatically.
+- **Voice out:** any plugin, node-red flow, or API client can make the boat speak ("Anchor alarm: drag detected") through speakers anywhere on the boat.
 - **Voice in:** wake-word-triggered voice commands ("ok nabu, log my position") are transcribed and published to a subscribable SignalK path for anything to consume.
 
 ### 1.2 The plugin family
@@ -22,13 +22,14 @@ Voice in and voice out for a boat's SignalK server, fully offline:
 | `signalk-whisper` | Speech-to-text service | `rhasspy/wyoming-whisper` (faster-whisper) | 10300 | ✅ Usable by any Wyoming client, incl. Home Assistant |
 | `signalk-piper` | Text-to-speech service | `rhasspy/wyoming-piper` | 10200 | ✅ Same |
 | `signalk-openwakeword` | Wake word detection service | `rhasspy/wyoming-openwakeword` | 10400 | ✅ Same |
-| `signalk-wyoming` | Orchestrator: pipelines, satellite manager, TTS router, notification bridge, SignalK paths/API, webapp. Optionally runs a **local satellite** container (mic/speaker on the server box). | our own satellite image (§6) | satellite: 10700, control: 10800 | Needs ≥1 of whisper/piper + ≥1 audio endpoint |
+| `signalk-wyoming` | Orchestrator: pipelines, satellite manager, TTS router, SignalK paths/API, webapp. Optionally runs a **local satellite** container (mic/speaker on the server box). | our own satellite image (§6) | satellite: 10700, control: 10800 | Needs ≥1 of whisper/piper + ≥1 audio endpoint |
 
 All four require **signalk-container** (container runtime manager, reached via `globalThis`) and use **signalk-container-helper** (`ManagedContainer`, `buildConfig()`, `startSafely()`, offline-tolerant conventions).
 
 ### 1.3 Non-goals (v1)
 
 - Intent handling / NLU / conversation (D3 — future separate plugin)
+- Notification→speech bridging (D16 — this family does speech only, ingesting and synthesizing; an external plugin watches `notifications.*` and calls the `say()` API, §4.2)
 - ESPHome-based voice devices (HA Voice PE, ESP32-S3-BOX) — they speak ESPHome's native protocol, not Wyoming
 - Cloud STT/TTS providers (offline-first; pluggable providers possible later)
 - Media/music playback, ducking, multiroom audio sync
@@ -47,7 +48,7 @@ Model *download* sizes are in §3.2; what actually constrains boat servers is re
 | satellite container | ~50 MB |
 | orchestrator | negligible (runs inside SignalK's Node process) |
 
-Documented minimums (each plugin README): **TTS-only install** (piper + orchestrator — the recommended starter, §4.4) runs comfortably alongside SignalK on a Pi 4 / 2 GB. **Full stack** (all four plugins + local satellite): Pi 4/5 with 4 GB. Container-helper memory caps (§5) keep a misbehaving service from OOMing the boat server.
+Documented minimums (each plugin README): **TTS-only install** (piper + orchestrator — the recommended starter, §4.3) runs comfortably alongside SignalK on a Pi 4 / 2 GB. **Full stack** (all four plugins + local satellite): Pi 4/5 with 4 GB. Container-helper memory caps (§5) keep a misbehaving service from OOMing the boat server.
 
 ---
 
@@ -65,7 +66,7 @@ Wyoming services are plain TCP servers. **The orchestrator is a Wyoming TCP clie
 │  ┌───────────────────────────────────────────────┐  │ │   each listens :10700)   │
 │  │ signalk-wyoming (orchestrator)                │──────►  cockpit               │
 │  │  · satellite mgr · pipelines · VAD            │  │ │ ►  salon                 │
-│  │  · say() router  · notification bridge        │  │ │ ►  cabin                 │
+│  │  · say() router  · announcement queues        │  │ │ ►  cabin                 │
 │  │  · voice.* paths · REST/PUT API · webapp      │  │ └──────────────────────────┘
 │  └───┬────────────┬────────────┬────────────┬────┘  │
 │      │ :10300     │ :10200     │ :10400     │ :10700/:10800
@@ -113,12 +114,9 @@ v1 ships one implementation: `RemoteSatellite` (Wyoming TCP client). The **local
 **Voice command — central wake mode** (dumb satellite, always streaming): **deferred to v1.x (D15).** The satellite would stream continuously to the orchestrator, which tees audio to openwakeword and watches for `detection` itself — trading continuous LAN audio (~256 kbit/s/satellite raw PCM) and server CPU for satellites that can't run wake streaming. v1 supports satellite wake mode only.
 
 **Announcement:**
-1. `say()` invoked (REST / PUT / PropertyValues / notification bridge).
+1. `say()` invoked (REST / PUT / PropertyValues).
 2. Orchestrator sends `synthesize` to piper, receives `audio-start/chunk/stop`. One synthesis per unique voice per announcement: the default voice synthesizes once, is **buffered in full**, and replays to each target's queue — an `AudioStream` is single-consumer, so fan-out to queues at different depths requires the buffer; announcements are short, so this is cheap. A per-satellite voice override (v1.x) synthesizes separately for that satellite only.
 3. Audio streams to each target satellite's per-satellite FIFO queue; `priority: 'urgent'` jumps the queue. State paths update (`speaking`).
-
-**Notification bridge:**
-`notifications.*` delta → filter (state ≥ `minState`, `method` includes `sound` unless configured otherwise, only on state *transitions*) → `say(value.message ?? "Alarm: <path>", targets, urgent if emergency)`.
 
 ### 2.4 Endpointing (utterance segmentation)
 
@@ -132,7 +130,7 @@ v1 ships one implementation: `RemoteSatellite` (Wyoming TCP client). The **local
 | Satellite wake (`--wake-uri`) — the only v1 pipeline mode (D15) | **Orchestrator** | Energy gate + timeout on the post-wake stream → sends whisper `AudioStop` → relays the resulting `Transcript` to the satellite, which stops streaming on it |
 | Satellite VAD mode (`--vad`, no wake service) | Satellite (silero) | Not used by any v1 configuration; the image supports it for standalone/upstream-style use |
 
-Tunables (advanced config, §4.4): `silenceMs` (default 800), `maxUtteranceMs` (10000), `minUtteranceMs` (300). All paths feed one internal `Endpointer` interface. **Contingency (D7):** if the M2 spike fails its go/no-go (<10% false-endpoint rate on ≥30 min of real boat audio: engine on; engine off + wind; motoring into chop), silero VAD via `onnxruntime-node` replaces the energy gate behind the same interface **in v1**.
+Tunables (advanced config, §4.3): `silenceMs` (default 800), `maxUtteranceMs` (10000), `minUtteranceMs` (300). All paths feed one internal `Endpointer` interface. **Contingency (D7):** if the M2 spike fails its go/no-go (<10% false-endpoint rate on ≥30 min of real boat audio: engine on; engine off + wind; motoring into chop), silero VAD via `onnxruntime-node` replaces the energy gate behind the same interface **in v1**.
 
 ### 2.5 Concurrency & interruption semantics
 
@@ -208,7 +206,7 @@ Custom `voice.*` branch (outside the SignalK schema — normal plugin practice):
 | `voice.satellites.<id>.connected` | `boolean` | |
 | `voice.satellites.<id>.state` | `'idle' \| 'listening' \| 'transcribing' \| 'speaking'` | |
 | `voice.say` | write-only PUT target | See §4.2 |
-| `voice.muted` | `boolean`, PUT-able | D14. `true` suppresses the notification bridge and `priority: 'normal'` announcements; `urgent` (including `emergency` notifications) plays through. Defaults to `false`; not persisted across restarts. |
+| `voice.muted` | `boolean`, PUT-able | D14. `true` suppresses `priority: 'normal'` announcements; `urgent` plays through. Defaults to `false`; not persisted across restarts. |
 
 ### 4.2 The `say()` surface (all three delegate to one internal function)
 
@@ -227,7 +225,7 @@ Semantics (shared by all three surfaces):
 - The promise resolves on **enqueue**, not playback completion. `queued` lists the satellites the audio was queued to; `errors` lists per-satellite failures (disconnected, queue full). `ok` is `true` iff every effective target was queued.
 - **Partial failure resolves** (`ok: false`, both arrays populated) — it never rejects. Callers who care check `errors`; fire-and-forget callers aren't punished for one dead satellite.
 - It rejects (REST 503 / PUT failure) only when **nothing** could be queued: TTS unavailable, or zero reachable targets.
-- `text` is capped at **500 characters**; longer input is truncated with `…` and a logged warning — one malformed notification can't monopolize the queue.
+- `text` is capped at **500 characters**; longer input is truncated with `…` and a logged warning — one malformed caller can't monopolize the queue.
 - While `voice.muted` is `true` (D14): `priority: 'normal'` calls resolve `{ ok: false, queued: [], suppressed: 'muted' }` — nothing queued, not an error; `urgent` bypasses mute.
 - `wait: true` (resolve on playback completion, for node-red sequencing) is reserved for v1.x — the field is honored-or-rejected, never silently ignored. In v1 it rejects with `{ ok: false, error: "wait:true is not supported in v1; poll voice.satellites.<id>.state" }`.
 
@@ -243,29 +241,7 @@ Semantics (shared by all three surfaces):
    ```
    Emitting an API object (not say-*events*) is deliberate: PropertyValues replays history, which would re-speak stale messages; replaying an API handle is instead a feature — late-loading plugins get it automatically. The emitted object is a **stable facade**: `say` checks plugin state internally and rejects with a clear "signalk-wyoming is stopped" error while the plugin is disabled, and the plugin re-emits on every start. Consumers keep the latest emission (§3.1 convention), but a stale handle held across a restart still fails safely instead of calling into a dead closure.
 
-### 4.3 Notification bridge (core v1)
-
-Config:
-
-| Field | Default | Notes |
-|-------|---------|-------|
-| `enabled` | `true` | |
-| `minState` | `alarm` | speak `alert`/`warn`/`alarm`/`emergency` at or above this |
-| `requireSoundMethod` | `true` | only speak notifications whose `method` includes `sound` |
-| `includePaths` / `excludePaths` | `[]` | glob patterns on the notification path |
-| `targets` | all | satellite ids (§4.2 semantics) |
-| `announceActiveOnStartup` | `true` | see startup behavior below |
-| `cooldownSeconds` | `60` | per-path flap protection: minimum interval before re-speaking the same notification path; `0` disables |
-
-Behavior:
-
-- Speak on state *transitions* into qualifying states — no re-speak of unchanged notifications; escalation to a higher state re-speaks.
-- **Flap protection:** the per-path cooldown suppresses re-speaking the same notification path within `cooldownSeconds` — a bouncing sensor toggling normal↔alarm speaks once a minute, not once a second. Escalation to a *higher* state bypasses the cooldown (a flap should not mute an emergency).
-- **Startup:** alarms already active when the plugin starts are exactly what a user rebooting the server needs to hear. After a fixed 10 s settle delay (lets the notification tree repopulate), each qualifying active notification is spoken once **through the normal bridge path**, exactly as if it had just transitioned — no bespoke summary machinery. Disable via `announceActiveOnStartup: false`.
-- `emergency` maps to `priority: 'urgent'`. Spoken text is the notification's `message`, falling back to a path-derived phrase: strip the `notifications.` prefix, take the last 2–3 segments, split camelCase/snake_case, join with spaces, capitalize (`notifications.navigation.anchor.alarmState` → "Anchor alarm state"; `notifications.bilge.forward.highWater` → "Forward high water").
-- While `voice.muted` is `true` (D14), bridge announcements are suppressed — except `emergency`, which maps to `urgent` and plays through. Quiet hours and repeat/nag policies are v1.x (§9).
-
-### 4.4 Satellites config
+### 4.3 Satellites config
 
 ```
 satellites: [
@@ -293,7 +269,7 @@ Satellite `id`s must match `^[a-zA-Z0-9_-]+$` (validated at config load, with a 
 
 Degraded modes are first-class: TTS-only (no whisper — announcements only, the recommended starter install), STT-only (no piper — commands published, no spoken replies). A wake-enabled satellite without openwakeword available → config-time warning + `notifications.voice.wake` at runtime.
 
-### 4.5 Webapp
+### 4.4 Webapp
 
 One webapp, three screens. This is the answer to "audio config is frustrating":
 
@@ -391,7 +367,7 @@ Principle: **audio never touches the SignalK process.** Whisper/piper/openwakewo
 - Mock Wyoming server test package (§10) — needed before the first line of orchestrator code (D13).
 - npm names reserved — 0.0.1 placeholders published without the `signalk-node-server-plugin` keyword, so they stay out of the app store until a functional release.
 
-**M1 — "The boat talks"** (useful with zero microphones): `signalk-piper`; orchestrator with `say()` core (REST + PUT + PropertyValues), `voice.muted` (D14), local satellite (output-only), **notification bridge**, status paths, webapp Status + basic Test screens.
+**M1 — "The boat talks"** (useful with zero microphones): `signalk-piper`; orchestrator with `say()` core (REST + PUT + PropertyValues), `voice.muted` (D14), local satellite (output-only), status paths, webapp Status + basic Test screens.
 
 **M2 — "The boat listens":** `signalk-whisper`; pipeline engine + energy-gate endpointer, with a spike validating it against real boat audio under the D7 go/no-go (<10% false-endpoint rate: engine on; engine off + wind; motoring into chop — failing pulls silero into v1); webapp record-and-transcribe and record/playback screens; `voice.command` publishing. (Satellite record → whisper makes STT testable before wake words exist.)
 
@@ -399,7 +375,7 @@ Principle: **audio never touches the SignalK process.** Whisper/piper/openwakewo
 
 **M4 — "Whole-boat":** remote satellites hardened (reconnect/backoff soak testing), queue polish, Pi satellite recipe docs.
 
-**v1.x candidates:** quiet hours + repeat/nag policy for the bridge (building on `voice.muted`, D14); `say({ wait: true })` (resolve on playback completion); silero VAD endpointer in the orchestrator, if the M2 go/no-go didn't already pull it into v1 (D7); central wake mode for satellites that can't run wake streaming (D15); webapp config editor (the JSON-schema auto-UI degrades at this schema size); shared-secret handshake in the satellite image (§8); priority queue refinement; per-satellite voices; mDNS "scan for satellites"; custom wake-word model upload.
+**v1.x candidates:** quiet hours (scheduled `voice.muted`, D14); `say({ wait: true })` (resolve on playback completion); silero VAD endpointer in the orchestrator, if the M2 go/no-go didn't already pull it into v1 (D7); central wake mode for satellites that can't run wake streaming (D15); webapp config editor (the JSON-schema auto-UI degrades at this schema size); shared-secret handshake in the satellite image (§8); priority queue refinement; per-satellite voices; mDNS "scan for satellites"; custom wake-word model upload.
 
 **Stretch:** browser satellite webapp (`getUserMedia` → websocket satellite; zero audio config on any tablet — needs HTTPS; subsumes browser push-to-talk, the same capture path); `role: satellite-only` mode; native in-process local satellite (bare-metal desktop optimization behind the `Satellite` seam); streaming TTS; Snapcast as an announce target; intents/LLM assistant as a **separate plugin** consuming `voice.command` + `signalk-wyoming.api`; GPU whisper.
 
@@ -412,9 +388,9 @@ Built test-driven, with tests at every level (D13). A voice pipeline that fails 
 | Level | What | How |
 |-------|------|-----|
 | **Static** | Code style and lint errors never reach review | **ESLint + Prettier** checks in CI on every PR; a pre-commit hook (husky + lint-staged) auto-formats staged files locally |
-| **Unit** | Notification-bridge state machine (transitions, cooldown, startup replay), queue / priority / interruption rules (§2.5), endpointer, target resolution, config validation | Plain Node tests with fake timers; no I/O |
+| **Unit** | Queue / priority / interruption rules (§2.5), endpointer, target resolution, config validation | Plain Node tests with fake timers; no I/O |
 | **Protocol** | Orchestrator's Wyoming client, pipeline flows end-to-end, `describe` health checks, satellite reconnect/backoff | **Mock Wyoming server** — the protocol is JSONL headers + PCM payloads; a scriptable fake (canned transcripts, injectable delays/disconnects) is ~100 lines. Published as a shared dev package used by all four plugins. |
 | **Integration** | Service plugins boot their real images, models load, `describe` succeeds; satellite image control API (record/play/VU assertions) | CI with Docker on amd64 every merge; periodic arm64 runs |
-| **Hardware / manual** | Real mics, speakers, echo, engine noise | The webapp Test screens (§4.5) *are* the manual rig — record-and-transcribe, record/playback, wake test, latency display |
+| **Hardware / manual** | Real mics, speakers, echo, engine noise | The webapp Test screens (§4.4) *are* the manual rig — record-and-transcribe, record/playback, wake test, latency display |
 
 **CI:** each repo runs the standard SignalK plugin **`signalk-ci.yml`** GitHub Actions workflow (build, lint, and test across supported Node versions), extended with the Docker integration jobs above. Every PR runs lint/format + unit + protocol suites; integration runs on merge; a release requires the integration suite green on arm64.
