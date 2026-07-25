@@ -1,5 +1,7 @@
 # signalk-wyoming
 
+> **Status: ALPHA** This SignalK Wyoming system is 100% vibecoded slop. I don't have the right hardware yet to test it, so I'm putting it out there for people to test in the meantime. It _should_ work. File issues for anything that doestn.
+
 An offline voice assistant for your boat, built on [Signal K](https://signalk.org) and the [Wyoming protocol](https://github.com/rhasspy/wyoming) (the voice ecosystem behind Home Assistant's Assist: Whisper, Piper, openWakeWord). This plugin is the **orchestrator** of a small family: it routes spoken announcements to speakers around the boat (`say()`), runs the wake-word → speech-to-text pipeline, publishes voice commands to `voice.command`, manages satellite (mic/speaker) devices, and ships a webapp for status and audio testing. Everything runs in containers on the boat — no cloud, no internet required after first model download.
 
 The full architecture (topology diagram, pipeline flows, concurrency rules) lives in **[SPEC.md](SPEC.md)** §2; design rationale in **[DECISIONS.md](DECISIONS.md)**.
