@@ -39,6 +39,10 @@ export async function serverAndClient(
   const server = new MockWyomingServer(options);
   await server.listen();
   const conn = await WyomingConnection.connect("127.0.0.1", server.port);
+  // The client's connect event can fire before the server's accept callback
+  // (seen on macOS CI) — a server→client send would then reach zero
+  // connections and vanish. Wait until the server has registered the conn.
+  await until(() => server.connections.length > 0);
   return { server, conn };
 }
 
