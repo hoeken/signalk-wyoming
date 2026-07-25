@@ -1,3 +1,15 @@
+# v0.1.1
+
+## Fixed
+
+- **Pipeline**: the ASR finish backstop timeout now gets headroom beyond the session watchdog's deadline, so the watchdog always wins the race to abort a hung transcription — previously the backstop could fire first and mask the watchdog's cleanup path.
+- **Tests**: the mock-server test helper now waits for the server to register an accepted connection before returning, fixing a hang on macOS where an immediate server→client send could vanish.
+
+## Changed
+
+- **Local satellite**: pinned container tag bumped to `ghcr.io/hoeken/wyoming-satellite:0.1.1`.
+- **README**: added an alpha-status disclaimer — the system is untested on real hardware so far; please file issues.
+
 # v0.1.0
 
 Initial release of **signalk-wyoming** — an offline voice assistant orchestrator for Signal K, built on the [Wyoming protocol](https://github.com/rhasspy/wyoming) (Whisper, Piper, openWakeWord). Everything runs in containers on the boat: no cloud, no internet required after first model download.
