@@ -21,7 +21,7 @@ import { SATELLITE_CONTROL_PORT, WYOMING_SATELLITE_PORT } from "./config.js";
 import { parseWyomingUri } from "./protocol/client.js";
 
 export const LOCAL_SATELLITE_IMAGE = "ghcr.io/hoeken/wyoming-satellite";
-export const LOCAL_SATELLITE_PINNED_TAG = "0.1.0";
+export const LOCAL_SATELLITE_PINNED_TAG = "0.1.1";
 export const LOCAL_SATELLITE_CONTAINER_NAME = "wyoming-satellite";
 /** In-container alias for the Signal K host (extraHosts host-gateway). */
 export const SK_HOST_ALIAS = "skhost";
