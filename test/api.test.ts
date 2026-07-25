@@ -181,6 +181,7 @@ describe("route registration + access levels", () => {
     expectAccess("post /api/mute", "readwrite");
     expectAccess("get /api/events", "readonly");
     expectAccess("get /api/log", "readonly");
+    expectAccess("get /api/versions", "readonly");
     expectAccess("get /api/update/check", "admin");
     expectAccess("post /api/update/apply", "admin");
   });
@@ -224,6 +225,47 @@ describe("running-flag guard", () => {
       expect(res.statusCode, key).toBe(503);
       expect((res.body as { error: string }).error).toMatch(/stopped/);
     }
+  });
+});
+
+describe("GET /api/versions", () => {
+  const githubTags = (names: string[]) =>
+    (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => names.map((name) => ({ name })),
+    })) as unknown as typeof fetch;
+
+  it("serves sorted satellite image tags, even while stopped (unguarded)", async () => {
+    const { router, routes } = makeRouter();
+    const h = makeDeps({
+      fetchImpl: githubTags(["v0.1.0", "v0.2.0-rc1", "v0.1.1", "junk"]),
+    });
+    registerApiRoutes(router, h.deps);
+    h.setRunning(false); // config-panel dropdown works pre-enable
+    const res = await call(routes, "get /api/versions");
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      versions: [
+        { tag: "0.2.0-rc1", prerelease: true },
+        { tag: "0.1.1" },
+        { tag: "0.1.0" },
+      ],
+    });
+  });
+
+  it("502 {error} when GitHub is unreachable or rate-limited", async () => {
+    const { router, routes } = makeRouter();
+    const h = makeDeps({
+      fetchImpl: (async () => ({
+        ok: false,
+        status: 403,
+      })) as unknown as typeof fetch,
+    });
+    registerApiRoutes(router, h.deps);
+    const res = await call(routes, "get /api/versions");
+    expect(res.statusCode).toBe(502);
+    expect((res.body as { error: string }).error).toMatch(/403/);
   });
 });
 

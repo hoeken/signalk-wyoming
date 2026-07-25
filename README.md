@@ -55,7 +55,7 @@ Add **signalk-whisper** later for voice commands (test them via the webapp's rec
 
 ## Configuration
 
-Edited in the Signal K plugin config UI (Server → Plugin Config → _Voice (Wyoming)_). Shape and defaults (see `src/config.ts`):
+Edited in the Signal K plugin config UI (Server → Plugin Config → _Voice (Wyoming)_) — a custom panel with live satellite/service status, a remote-satellite editor, wake-word checkboxes fed by the running wake service, a piper voice dropdown, and image-version pick + one-click update for the local satellite container. On servers without custom-panel support you get the plain JSON-schema form instead; both edit the same shape and defaults (see `src/config.ts`):
 
 ```js
 {
@@ -135,6 +135,7 @@ All routes under `/plugins/signalk-wyoming`; they respect Signal K access contro
 | `POST /api/mute`                                   | `{muted: boolean}` → `{muted}` (same switch as the `voice.muted` PUT)                                                    |
 | `GET /api/log`                                     | ring buffer of recent events `[{at, kind, data}]`                                                                        |
 | `GET /api/events`                                  | SSE: `state`, `command`, `announcement`, `detection`, `service`, `error`                                                 |
+| `GET /api/versions`                                | local-satellite image tags `{versions: [{tag, prerelease?}]}` (GitHub; works while the plugin is disabled)               |
 | `GET /api/update/check` / `POST /api/update/apply` | local-satellite image updates (admin)                                                                                    |
 
 ## The `say()` API for other plugins

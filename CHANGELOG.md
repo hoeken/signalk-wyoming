@@ -1,3 +1,30 @@
+# Unreleased
+
+Nothing to reconfigure — existing settings carry over unchanged. The plugin
+now depends on signalk-container-helper 0.2.1 or later.
+
+## Added
+
+- **New graphical configuration panel.** Server → Plugin Config → _Voice
+  (Wyoming)_ is now a real panel instead of the bare settings form: live
+  orchestrator status (satellite connections and discovered asr/tts/wake
+  services), a remote-satellite editor with per-satellite wake-word
+  checkboxes driven by the running wake service's advertised models, a piper
+  voice dropdown fed by `/api/voices`, and — for the local satellite
+  container — an image-version dropdown plus one-click update check/apply.
+  Built on the shared `signalk-container-helper/ui` building blocks as an
+  ESM Module Federation remote. On servers without custom-panel support you
+  keep the plain settings form, which works exactly as before.
+- **`GET /api/versions`** — published `ghcr.io/hoeken/wyoming-satellite`
+  image tags (from the repo's GitHub tags), feeding the panel's version
+  dropdown. Deliberately usable while the plugin is disabled, so you can
+  pick a version up front; if GitHub is unreachable — say, offshore — the
+  panel keeps showing the last version list it saw.
+- **Update detection for the local satellite container** — the
+  ManagedContainer now registers with signalk-container's update service
+  (latest stable image tag from GitHub), so `GET /api/update/check` reports
+  real results and the panel's "Check for updates" works.
+
 # v0.1.1
 
 ## Fixed

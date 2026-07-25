@@ -19,6 +19,7 @@ import {
   wavToPcm,
   type TranscribeSessionLike,
 } from "./asr.js";
+import { fetchSatelliteVersions } from "./local-satellite.js";
 import { probeWyoming } from "./protocol/client.js";
 import type { Info, TtsVoice } from "./protocol/events.js";
 import type { ServiceDirectory } from "./discovery.js";
@@ -590,6 +591,22 @@ export function registerApiRoutes(router: ApiRouter, deps: ApiDeps): void {
       );
     }),
   );
+
+  // --- local satellite image versions (config-panel dropdown) --------------
+  // Deliberately NOT guarded by the running flag: the operator picks a tag
+  // while the plugin is still disabled, and the route only reaches out to
+  // GitHub on demand.
+
+  access("readonly").get("/api/versions", async (_req, res) => {
+    try {
+      const versions = await fetchSatelliteVersions(fetchImpl);
+      res.status(200).json({ versions });
+    } catch (err) {
+      res.status(502).json({
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
 
   // --- local satellite image updates (admin-only: no access() wrapper) ----------
   // Thin delegation to the helper's update surface: the ManagedContainer is

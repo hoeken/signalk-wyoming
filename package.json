@@ -26,7 +26,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && webpack",
     "test": "npm run typecheck:test && vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
@@ -53,6 +53,7 @@
     "stt",
     "marine",
     "signalk-node-server-plugin",
+    "signalk-plugin-configurator",
     "signalk-webapp",
     "signalk-category-utility"
   ],
@@ -72,20 +73,27 @@
     "node": ">=24"
   },
   "dependencies": {
-    "signalk-container-helper": "^0.1.0"
+    "signalk-container-helper": "^0.2.1"
   },
   "devDependencies": {
+    "@babel/core": "^7.29.0",
+    "@babel/preset-react": "^7.28.5",
     "@eslint/js": "^10.0.1",
     "@signalk/server-api": "^2.30.0",
     "@types/node": "^24.0.0",
+    "babel-loader": "^10.1.1",
     "eslint": "^10.2.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.4.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
     "prettier": "^3.8.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
     "typescript": "^5.5.0",
     "typescript-eslint": "^8.58.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "webpack": "^5.105.4",
+    "webpack-cli": "^7.0.2"
   }
 }

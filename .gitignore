@@ -1,5 +1,10 @@
 # build output
 dist/
 node_modules/
+
+# generated config-panel bundle (the rest of public/ is the hand-written webapp)
+public/remoteEntry.js
+public/*.mjs
+public/*.mjs.LICENSE.txt
 *.log
 .DS_Store

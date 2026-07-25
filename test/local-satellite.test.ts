@@ -1,11 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_ADVANCED, DEFAULT_LOCAL_SATELLITE } from "../src/config.js";
 import {
   buildLocalSatelliteConfig,
   buildLocalSatelliteEnv,
   containerWakeUri,
+  createLocalSatellite,
+  fetchSatelliteVersions,
   LOCAL_SATELLITE_IMAGE,
   LOCAL_SATELLITE_PINNED_TAG,
+  SATELLITE_TAGS_URL,
   type LocalSatelliteBuildInputs,
 } from "../src/local-satellite.js";
 
@@ -152,5 +155,94 @@ describe("buildLocalSatelliteConfig", () => {
 
   it("pins the 'auto' tag to a real release", () => {
     expect(LOCAL_SATELLITE_PINNED_TAG).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+});
+
+function githubTags(names: string[]): typeof fetch {
+  return vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => names.map((name) => ({ name })),
+  })) as unknown as typeof fetch;
+}
+
+describe("fetchSatelliteVersions", () => {
+  it("maps GitHub v-tags to image tags, newest first, prereleases flagged", async () => {
+    const fetchImpl = githubTags(["v0.1.0", "v0.2.0-rc1", "v0.1.1", "junk"]);
+    const versions = await fetchSatelliteVersions(fetchImpl);
+    expect(versions).toEqual([
+      { tag: "0.2.0-rc1", prerelease: true },
+      { tag: "0.1.1" },
+      { tag: "0.1.0" },
+    ]);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      SATELLITE_TAGS_URL,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("throws with the HTTP status on failure (rate limit, offline proxy)", async () => {
+    const fetchImpl = (async () => ({
+      ok: false,
+      status: 403,
+    })) as unknown as typeof fetch;
+    await expect(fetchSatelliteVersions(fetchImpl)).rejects.toThrow(/403/);
+  });
+});
+
+describe("update-detection registration", () => {
+  const app = {
+    debug: () => {},
+    setPluginStatus: () => {},
+    setPluginError: () => {},
+  };
+  const makeHandle = (tag: string, fetchImpl: typeof fetch) =>
+    createLocalSatellite({
+      app,
+      local: { ...DEFAULT_LOCAL_SATELLITE, tag },
+      advanced: { ...DEFAULT_ADVANCED },
+      wakeUri: () => null,
+      fetchImpl,
+    });
+
+  it("compares the resolved tag — 'auto' maps to the pinned release", () => {
+    const handle = makeHandle("auto", githubTags([]));
+    expect(handle.container.options.updates?.currentTag?.()).toBe(
+      LOCAL_SATELLITE_PINNED_TAG,
+    );
+    const pinned = makeHandle("0.1.0", githubTags([]));
+    expect(pinned.container.options.updates?.currentTag?.()).toBe("0.1.0");
+  });
+
+  it("uses a custom source: latest stable GitHub tag (repo has no Releases)", async () => {
+    const handle = makeHandle(
+      "auto",
+      githubTags(["v0.2.0-rc1", "v0.1.1", "v0.1.0"]),
+    );
+    const spec = handle.container.options.updates?.versionSource;
+    if (spec === undefined || !("custom" in spec)) {
+      throw new Error("expected a custom version source");
+    }
+    const runtime = {} as Parameters<typeof spec.custom.fetch>[0];
+    expect(await spec.custom.fetch(runtime)).toEqual({
+      kind: "version",
+      latest: "0.1.1",
+    });
+  });
+
+  it("reports fetch failures as an error result, never a throw", async () => {
+    const handle = makeHandle("auto", (async () => ({
+      ok: false,
+      status: 500,
+    })) as unknown as typeof fetch);
+    const spec = handle.container.options.updates?.versionSource;
+    if (spec === undefined || !("custom" in spec)) {
+      throw new Error("expected a custom version source");
+    }
+    const runtime = {} as Parameters<typeof spec.custom.fetch>[0];
+    expect(await spec.custom.fetch(runtime)).toEqual({
+      kind: "error",
+      error: "GitHub answered HTTP 500",
+    });
   });
 });

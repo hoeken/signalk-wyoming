@@ -15,6 +15,7 @@
 import {
   ManagedContainer,
   type ContainerConfig,
+  type VersionSourceResult,
 } from "signalk-container-helper";
 import type { AdvancedConfig, LocalSatelliteConfig } from "./config.js";
 import { SATELLITE_CONTROL_PORT, WYOMING_SATELLITE_PORT } from "./config.js";
@@ -118,6 +119,85 @@ export function buildLocalSatelliteConfig(
   return config;
 }
 
+// ---------------------------------------------------------------------------
+// Image versions — the config panel's dropdown and update detection
+// ---------------------------------------------------------------------------
+
+/**
+ * GitHub tags for the satellite image. The publish workflow builds an image
+ * tag (bare semver, `v` stripped by docker/metadata-action) for every `v*`
+ * git tag; the repo has no GitHub Releases, so the helper's stock
+ * `githubReleases` source would see nothing.
+ */
+export const SATELLITE_TAGS_URL =
+  "https://api.github.com/repos/hoeken/wyoming-satellite/tags?per_page=25";
+
+export interface SatelliteVersion {
+  tag: string;
+  prerelease?: boolean;
+}
+
+const IMAGE_TAG = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?$/;
+
+/** Numeric-descending on the x.y.z triple; stable before prerelease. */
+function compareTagsDesc(a: string, b: string): number {
+  const pa = IMAGE_TAG.exec(a);
+  const pb = IMAGE_TAG.exec(b);
+  if (pa === null || pb === null) return 0;
+  for (let i = 1; i <= 3; i += 1) {
+    const d = Number(pb[i]) - Number(pa[i]);
+    if (d !== 0) return d;
+  }
+  return (pa[4] === undefined ? 0 : 1) - (pb[4] === undefined ? 0 : 1);
+}
+
+/**
+ * Image tags published for the local satellite, newest first — feeds both
+ * GET /api/versions (the panel's VersionSelect) and the update-detection
+ * VersionSource. Throws on network/HTTP failure (e.g. offline, or GitHub's
+ * anonymous rate limit); callers surface the message, never crash.
+ */
+export async function fetchSatelliteVersions(
+  fetchImpl: typeof fetch = fetch,
+): Promise<SatelliteVersion[]> {
+  const res = await fetchImpl(SATELLITE_TAGS_URL, {
+    signal: AbortSignal.timeout(10_000),
+    headers: { accept: "application/vnd.github+json" },
+  });
+  if (!res.ok) {
+    throw new Error(`GitHub answered HTTP ${res.status}`);
+  }
+  const body = (await res.json()) as { name?: unknown }[];
+  return (Array.isArray(body) ? body : [])
+    .map((entry) => (typeof entry?.name === "string" ? entry.name : ""))
+    .map((name) => (name.startsWith("v") ? name.slice(1) : name))
+    .filter((tag) => IMAGE_TAG.test(tag))
+    .sort(compareTagsDesc)
+    .map((tag) => {
+      const version: SatelliteVersion = { tag };
+      if (IMAGE_TAG.exec(tag)?.[4] !== undefined) version.prerelease = true;
+      return version;
+    });
+}
+
+/** Update-detection strategy: latest stable image tag from GitHub. */
+async function latestSatelliteVersion(
+  fetchImpl: typeof fetch,
+): Promise<VersionSourceResult> {
+  try {
+    const versions = await fetchSatelliteVersions(fetchImpl);
+    const stable = versions.find((v) => v.prerelease !== true);
+    return stable !== undefined
+      ? { kind: "version", latest: stable.tag }
+      : { kind: "error", error: "no release tags found" };
+  } catch (err) {
+    return {
+      kind: "error",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 export interface LocalSatelliteAddresses {
   /** Wyoming endpoint. */
   host: string;
@@ -189,6 +269,14 @@ export function createLocalSatellite(
     buildConfig: (tag) => buildLocalSatelliteConfig(tag, currentInputs()),
     // Control API is HTTP — helper readiness applies (unlike Wyoming TCP).
     readiness: { port: SATELLITE_CONTROL_PORT, path: "/health" },
+    updates: {
+      versionSource: {
+        custom: { fetch: () => latestSatelliteVersion(fetchImpl) },
+      },
+      // Compare the resolved tag — "auto" is an alias, not a version.
+      currentTag: () =>
+        deps.local.tag === "auto" ? LOCAL_SATELLITE_PINNED_TAG : deps.local.tag,
+    },
   });
 
   return {
