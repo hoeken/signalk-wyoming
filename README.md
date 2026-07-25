@@ -1,27 +1,57 @@
 # signalk-wyoming
 
-> **Status: ALPHA** This SignalK Wyoming system is 100% vibecoded slop. I don't have the right hardware yet to test it, so I'm putting it out there for people to test in the meantime. It _should_ work. File issues for anything that doestn.
+> **Status: ALPHA.** This SignalK Wyoming system is 100% vibecoded slop. I
+> don't have the right hardware yet to test it, so I'm putting it out there
+> for people to test in the meantime. It _should_ work. File issues for
+> anything that doesn't.
 
-An offline voice assistant for your boat, built on [Signal K](https://signalk.org) and the [Wyoming protocol](https://github.com/rhasspy/wyoming) (the voice ecosystem behind Home Assistant's Assist: Whisper, Piper, openWakeWord). This plugin is the **orchestrator** of a small family: it routes spoken announcements to speakers around the boat (`say()`), runs the wake-word → speech-to-text pipeline, publishes voice commands to `voice.command`, manages satellite (mic/speaker) devices, and ships a webapp for status and audio testing. Everything runs in containers on the boat — no cloud, no internet required after first model download.
+## What is this?
 
-The full architecture (topology diagram, pipeline flows, concurrency rules) lives in **[SPEC.md](SPEC.md)** §2; design rationale in **[DECISIONS.md](DECISIONS.md)**.
+An offline voice assistant for your boat, built on
+[Signal K](https://signalk.org) and the
+[Wyoming protocol](https://github.com/rhasspy/wyoming) (the voice ecosystem
+behind Home Assistant's Assist). It gives your boat a voice and ears:
 
-## The plugin family
+- **The boat talks** — spoken announcements to speakers around the boat.
+  Your anchor alarm, dead-man's switch, or any other plugin can say
+  _"Anchor alarm: drag detected"_ out loud, on every speaker or just the
+  cockpit one.
+- **The boat listens** — say a wake word ("okay nabu"), speak a command,
+  and the transcribed text is published to Signal K for other plugins to
+  act on.
 
-| Plugin                                                                 | Role                                                                             | Default port            | Standalone?                                           |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------- | ----------------------- | ----------------------------------------------------- |
-| **signalk-wyoming** (this repo)                                        | Orchestrator: pipelines, satellite manager, TTS routing, `voice.*` paths, webapp | 10700/10800 (satellite) | needs ≥1 of the services below + an audio endpoint    |
-| [signalk-piper](https://github.com/hoeken/signalk-piper)               | Text-to-speech (Wyoming Piper)                                                   | 10200                   | ✅ usable by any Wyoming client, incl. Home Assistant |
-| [signalk-whisper](https://github.com/hoeken/signalk-whisper)           | Speech-to-text (Wyoming faster-whisper)                                          | 10300                   | ✅                                                    |
-| [signalk-openwakeword](https://github.com/hoeken/signalk-openwakeword) | Wake word detection (Wyoming openWakeWord)                                       | 10400                   | ✅                                                    |
+Everything runs in containers **on the boat** — no cloud account, no
+internet required after the first model download.
 
-Audio endpoints are **satellites** — devices running [our containerized wyoming-satellite image](https://github.com/hoeken/wyoming-satellite) (`ghcr.io/hoeken/wyoming-satellite`) or upstream `wyoming-satellite` installs — anywhere on the boat LAN. The orchestrator can also run a **local satellite** container for a mic/speaker plugged into the Signal K server box itself.
+This plugin is the **orchestrator** of a small family. It connects the
+pieces: routes announcements, runs the wake-word → speech-to-text pipeline,
+manages your microphone/speaker devices (satellites), and ships a webapp
+for status and audio testing.
+
+| Plugin                                                                 | Role                             | Needed for                            |
+| ---------------------------------------------------------------------- | -------------------------------- | ------------------------------------- |
+| **signalk-wyoming** (this one)                                         | Orchestrator, satellites, webapp | everything                            |
+| [signalk-piper](https://github.com/hoeken/signalk-piper)               | Text-to-speech (Piper)           | announcements ("the boat talks")      |
+| [signalk-whisper](https://github.com/hoeken/signalk-whisper)           | Speech-to-text (Whisper)         | voice commands ("the boat listens")   |
+| [signalk-openwakeword](https://github.com/hoeken/signalk-openwakeword) | Wake word detection              | hands-free listening ("okay nabu, …") |
+
+Audio in/out happens through **satellites** — devices running the
+[wyoming-satellite image](https://github.com/hoeken/wyoming-satellite)
+(`ghcr.io/hoeken/wyoming-satellite`) or an upstream wyoming-satellite
+install — anywhere on the boat network. A mic/speaker plugged into the
+Signal K server box itself works too: enable the built-in **local
+satellite** and the plugin runs the container for you.
 
 ## Requirements
 
 - **Signal K server** on Node **≥ 24**.
-- **[signalk-container](https://www.npmjs.com/package/signalk-container)** — the container runtime manager (this plugin declares it via `signalk.requires`). All services run as Docker/Podman containers managed through it and [signalk-container-helper](https://github.com/hoeken/signalk-container-helper). When Signal K itself runs in a container, services launch as sibling containers via the host Docker socket — the Signal K container needs no audio access.
-- RAM budget (resident, per SPEC §1.4):
+- **[signalk-container](https://www.npmjs.com/package/signalk-container)**
+  with a working docker or podman runtime. All voice services run as
+  containers managed through it — you never touch docker yourself. When
+  Signal K itself runs in a container, services launch as sibling
+  containers via the host Docker socket; the Signal K container needs no
+  audio access.
+- Enough RAM for the services you install:
 
 | Component           | Approx. resident RAM                             |
 | ------------------- | ------------------------------------------------ |
@@ -31,19 +61,29 @@ Audio endpoints are **satellites** — devices running [our containerized wyomin
 | satellite container | ~50 MB                                           |
 | orchestrator        | negligible (runs inside Signal K's Node process) |
 
-**TTS-only install** (piper + orchestrator — the recommended starter) runs comfortably alongside Signal K on a Pi 4 / 2 GB. **Full stack** (all four plugins + local satellite): Pi 4/5 with 4 GB. Container memory caps keep a misbehaving service from OOMing the boat server.
+A **TTS-only install** (piper + this plugin — the recommended starter) runs
+comfortably alongside Signal K on a Pi 4 / 2 GB. The **full stack** (all
+four plugins + a local satellite) wants a Pi 4/5 with 4 GB. Container
+memory caps keep a misbehaving service from starving the boat server.
 
 ## Quick start (TTS-only — "the boat talks")
 
 The recommended first install needs zero microphones:
 
-1. Install **signalk-container** (and configure its runtime), then **signalk-piper** and **signalk-wyoming** from the Signal K App Store. Enable both plugins.
-2. signalk-piper starts the Piper container; first start downloads the voice (~60 MB — plugin status shows progress). The orchestrator discovers it automatically (`services.tts: "auto"`).
-3. Give the orchestrator an audio endpoint — either:
-   - enable **Local satellite** in the plugin config (mic/speaker on the server box; set `micDevice: "none"` for output-only), or
-   - add a **remote satellite**: any device on the LAN running `ghcr.io/hoeken/wyoming-satellite` (or upstream wyoming-satellite), entered as `{id, host, port}` — add `hasControlApi: true` when it runs our image so the webapp Audio screen and record-and-transcribe can reach its control API.
-4. Open the webapp (Signal K admin UI → Webapps → **Voice (Wyoming)**), go to **Test**, type something, press _Say it_.
-5. From anywhere else:
+1. Install **signalk-container** (and configure its runtime), then
+   **signalk-piper** and **signalk-wyoming** from the Signal K App Store.
+   Enable all of them.
+2. signalk-piper starts the Piper container; the first start downloads the
+   voice (~60 MB — its plugin status shows progress). This plugin discovers
+   it automatically — nothing to configure.
+3. Give the orchestrator a speaker — either:
+   - enable the **Local satellite** in the plugin config (mic/speaker on
+     the server box; set the microphone device to `none` for output-only), or
+   - add a **remote satellite**: any device on the network running the
+     satellite image, entered by host/port in the config panel.
+4. Open the webapp (Signal K admin UI → Webapps → **Voice (Wyoming)**), go
+   to **Test**, type something, press _Say it_.
+5. Make it useful — from any other software:
 
    ```bash
    curl -X POST http://localhost:3000/plugins/signalk-wyoming/api/say \
@@ -51,74 +91,106 @@ The recommended first install needs zero microphones:
      -d '{"text": "Anchor alarm: drag detected", "priority": "urgent"}'
    ```
 
-Add **signalk-whisper** later for voice commands (test them via the webapp's record-and-transcribe — no wake word needed), and **signalk-openwakeword** for hands-free wake words.
+Add **signalk-whisper** later for voice commands (test them from the
+webapp's record-and-transcribe — no wake word needed), and
+**signalk-openwakeword** for hands-free wake words.
 
 ## Configuration
 
-Edited in the Signal K plugin config UI (Server → Plugin Config → _Voice (Wyoming)_) — a custom panel with live satellite/service status, a remote-satellite editor, wake-word checkboxes fed by the running wake service, a piper voice dropdown, and image-version pick + one-click update for the local satellite container. On servers without custom-panel support you get the plain JSON-schema form instead; both edit the same shape and defaults (see `src/config.ts`):
+The plugin ships a graphical configuration panel (Server → Plugin Config →
+_Voice (Wyoming)_): live satellite and service status, a remote-satellite
+editor, wake-word checkboxes listing what your wake service actually
+offers, a voice dropdown listing your installed Piper voices, and — for the
+local satellite container — a version dropdown plus one-click update
+check/apply. On servers without custom-panel support you get a plain
+settings form with the same options.
 
-```js
-{
-  satellites: [                 // remote satellites the orchestrator connects to
-    {
-      id: 'cockpit',            // required; ^[a-zA-Z0-9_-]+$ — becomes voice.satellites.<id>
-                                // and a REST URL segment ('local' is reserved)
-      name: 'Cockpit',          // display name (default: id)
-      host: '10.10.10.21',      // required
-      port: 10700,              // Wyoming satellite port
-      wakeWords: ['okay_nabu'], // openWakeWord model names; empty = announce-only
-      hasControlApi: true,      // satellite runs our image → webapp Audio screen,
-      controlPort: 10800        //   record/play tests, record-and-transcribe
-    }                           //   (setting controlPort alone implies hasControlApi)
-  ],
-  localSatellite: {             // mic/speaker on the Signal K server box
-    enabled: false,             // opt-in, off by default
-    micDevice: 'auto',          // ALSA device string ('none' = no microphone);
-    sndDevice: 'auto',          //   find strings on the webapp Audio screen
-    wakeWords: [],
-    audioMode: 'alsa',          // 'alsa' (/dev/snd, headless hosts) | 'pulse-socket' (desktop)
-    feedbackSounds: true,       // awake/done sounds on wake interactions
-    hostPulseSocket: '/run/user/1000/pulse/native',  // pulse-socket mode only
-    noiseSuppression: undefined, // 0-4 (image default when unset)
-    autoGain: undefined,        // 0-31 dbFS
-    micVolume: undefined,       // multiplier
-    tag: 'auto'                 // ghcr.io/hoeken/wyoming-satellite tag; 'auto' = pinned release
-  },
-  services: {                   // 'auto' = discover from the sibling plugins;
-    asr: 'auto',                //   or a manual URI, e.g. 'tcp://gpubox:10300'
-    tts: 'auto',                //   (lets an off-boat GPU box or a Home Assistant
-    wake: 'auto'                //   add-on stand in for the sibling plugins)
-  },
-  defaults: {
-    language: 'en',
-    voice: ''                   // default piper voice (22.05 kHz voices only);
-  },                            //   '' = the TTS service's configured voice
-  advanced: {                   // endpointing + pipeline tunables
-    silenceMs: 800,             // end-of-utterance silence
-    maxUtteranceMs: 10000,
-    minUtteranceMs: 300,
-    wakeDedupMs: 2000,          // first wake detection wins; others ignored this long
-    pipelineTimeoutMs: 30000,
-    wakeRefractorySeconds: 3.0  // satellite image wake refractory
-  }
-}
-```
+### Remote satellites
 
-## Signal K paths
+One entry per mic/speaker device on the network:
 
-Under `vessels.self` (SPEC §4.1):
+| Setting                                          | Default | Notes                                                                                                                                                                           |
+| ------------------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                                             | —       | Required; letters/digits/`_`/`-`. Names the satellite everywhere: `voice.satellites.<id>`, REST URLs, announcement targets. `local` is reserved.                                |
+| `name`                                           | the id  | Display name.                                                                                                                                                                   |
+| `host` / `port`                                  | —/10700 | Where the satellite listens.                                                                                                                                                    |
+| `wakeWords`                                      | none    | Wake word models this satellite listens for (e.g. `okay_nabu`). Leave empty for an announce-only speaker.                                                                       |
+| `hasControlApi` (+ `controlPort`, default 10800) | off     | Turn on when the satellite runs [our image](https://github.com/hoeken/wyoming-satellite) — unlocks the webapp Audio screen, record/play tests and record-and-transcribe for it. |
 
-| Path                              | Value                                                     | Notes                                                                                                |
-| --------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `voice.command`                   | `{id, text, satellite, language, wakeWord?, durationMs?}` | one delta per utterance; `$source` = `signalk-wyoming.<satelliteId>`                                 |
-| `voice.satellites.<id>.connected` | `boolean`                                                 |                                                                                                      |
-| `voice.satellites.<id>.state`     | `idle \| listening \| transcribing \| speaking`           |                                                                                                      |
-| `voice.say`                       | write-only PUT target                                     | value: a plain string or the `say()` opts object                                                     |
-| `voice.muted`                     | `boolean`, PUT-able                                       | `true` suppresses `normal` announcements; `urgent` plays through. Defaults to `false`; not persisted |
+### Local satellite
 
-## REST API
+A mic/speaker plugged into the Signal K server box; the plugin runs the
+satellite container for you. Off by default.
 
-All routes under `/plugins/signalk-wyoming`; they respect Signal K access control (read for GETs, write for POSTs; image-update routes are admin-only).
+| Setting                                       | Default        | Notes                                                                                                             |
+| --------------------------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `micDevice` / `sndDevice`                     | `auto`         | ALSA device strings — find them on the webapp **Audio** screen. `auto` = image default; mic `none` = output-only. |
+| `wakeWords`                                   | none           | As above.                                                                                                         |
+| `audioMode`                                   | `alsa`         | `alsa` for headless boxes (/dev/snd passthrough); `pulse-socket` for desktop hosts (set `hostPulseSocket`).       |
+| `feedbackSounds`                              | on             | Awake/done chimes on wake-word interactions.                                                                      |
+| `noiseSuppression` / `autoGain` / `micVolume` | image defaults | Audio tuning, under "Audio tuning" in the panel.                                                                  |
+| `tag`                                         | `auto`         | Satellite image version. `auto` runs the pinned, tested release and follows plugin updates.                       |
+
+### Services
+
+Where the voice services live. `auto` (the default) finds the sibling
+plugins on this server automatically. Set a manual `tcp://host:port` URI to
+use a service running elsewhere — an off-boat GPU box, or a Home Assistant
+Wyoming add-on, can stand in for any of them (`asr` 10300, `tts` 10200,
+`wake` 10400).
+
+### Defaults & advanced
+
+| Setting             | Default | Notes                                                                                                                                                  |
+| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `defaults.language` | `en`    | Spoken language code.                                                                                                                                  |
+| `defaults.voice`    | —       | Default Piper voice for announcements (22.05 kHz voices only); empty uses the TTS service's own.                                                       |
+| `advanced.*`        | sane    | Endpointing and pipeline timing knobs (silence detection, utterance limits, wake dedup, timeouts). Leave alone unless commands cut off too early/late. |
+
+## Using it
+
+### Announcements — three ways in
+
+- **REST**: `POST /plugins/signalk-wyoming/api/say` with
+  `{text, targets?, voice?, priority?}` (see the curl example above).
+- **Signal K PUT** to `voice.say` — a plain string or the same options
+  object.
+- **From another plugin**, in-process with no HTTP round-trip — see
+  [DEVELOPERS.md](DEVELOPERS.md#the-in-process-say-api).
+
+`priority: "urgent"` jumps every queue, interrupts whatever is playing, and
+bypasses mute — use it for alarms. Normal announcements queue per satellite
+and respect the `voice.muted` switch. Failures are loud: if nothing could
+be played you get an error back, never a silent drop.
+
+### Voice commands
+
+Say a wake word, speak, pause. The transcribed utterance is published as
+one delta on **`voice.command`** — build your own automations on top with
+any plugin or client that subscribes to it (a command-handling plugin can
+answer back through `say()`).
+
+### Signal K paths
+
+Under `vessels.self`:
+
+| Path                              | Value                                                     | Notes                                                                                                 |
+| --------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `voice.command`                   | `{id, text, satellite, language, wakeWord?, durationMs?}` | one delta per utterance; `$source` = `signalk-wyoming.<satelliteId>`                                  |
+| `voice.satellites.<id>.connected` | `boolean`                                                 |                                                                                                       |
+| `voice.satellites.<id>.state`     | `idle \| listening \| transcribing \| speaking`           |                                                                                                       |
+| `voice.say`                       | write-only PUT target                                     | value: a plain string or the `say()` options object                                                   |
+| `voice.muted`                     | `boolean`, PUT-able                                       | `true` suppresses `normal` announcements; `urgent` plays through. Defaults to `false`; not persisted. |
+
+Problems surface as notifications under `notifications.voice.*` (e.g. a
+wake word configured with no wake service installed, or a service going
+down mid-flight).
+
+### REST API
+
+All routes under `/plugins/signalk-wyoming`; they respect Signal K access
+control (read access for GETs, write for POSTs; image-update routes are
+admin-only).
 
 | Method & path                                      | Body / result                                                                                                            |
 | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
@@ -127,92 +199,103 @@ All routes under `/plugins/signalk-wyoming`; they respect Signal K access contro
 | `GET /api/services`                                | `{asr, tts, wake}` → each `{uri, status, source, plugin?}`; `wake` gains `models` (available wake-word names) when ready |
 | `GET /api/voices`                                  | piper voices `[{name, languages, description}]`; `503` until TTS is available                                            |
 | `POST /api/satellites/:id/test`                    | queue a test tone → `202`                                                                                                |
-| `GET /api/satellites/:id/devices`                  | control-API proxy → `{capture: [{card, device, id, name}], playback: [...]}` (`404` if the satellite has no control API) |
-| `POST /api/satellites/:id/record`                  | `{seconds?}` (1–10, control-API limit) → `audio/wav` (proxied; briefly pauses the satellite)                             |
-| `POST /api/satellites/:id/play`                    | `{type: 'tone', frequency?, durationMs?}` or `{type: 'wav', data: base64}` (proxied)                                     |
-| `GET /api/satellites/:id/vu`                       | SSE stream of `{rms, peak}` mic levels (proxied)                                                                         |
-| `POST /api/transcribe`                             | `{satellite, seconds?}` (1–10 s) → record via control API → whisper → `{text, latencyMs}`; `503` until ASR is available  |
+| `GET /api/satellites/:id/devices`                  | audio devices `{capture: [{card, device, id, name}], playback: [...]}` (`404` if the satellite has no control API)       |
+| `POST /api/satellites/:id/record`                  | `{seconds?}` (1–10) → `audio/wav` (briefly pauses the satellite)                                                         |
+| `POST /api/satellites/:id/play`                    | `{type: 'tone', frequency?, durationMs?}` or `{type: 'wav', data: base64}`                                               |
+| `GET /api/satellites/:id/vu`                       | SSE stream of `{rms, peak}` mic levels                                                                                   |
+| `POST /api/transcribe`                             | `{satellite, seconds?}` (1–10 s) → record → whisper → `{text, latencyMs}`; `503` until STT is available                  |
 | `POST /api/mute`                                   | `{muted: boolean}` → `{muted}` (same switch as the `voice.muted` PUT)                                                    |
-| `GET /api/log`                                     | ring buffer of recent events `[{at, kind, data}]`                                                                        |
+| `GET /api/log`                                     | recent events `[{at, kind, data}]`                                                                                       |
 | `GET /api/events`                                  | SSE: `state`, `command`, `announcement`, `detection`, `service`, `error`                                                 |
-| `GET /api/versions`                                | local-satellite image tags `{versions: [{tag, prerelease?}]}` (GitHub; works while the plugin is disabled)               |
+| `GET /api/versions`                                | local-satellite image versions `{versions: [{tag, prerelease?}]}` (works while the plugin is disabled)                   |
 | `GET /api/update/check` / `POST /api/update/apply` | local-satellite image updates (admin)                                                                                    |
 
-## The `say()` API for other plugins
+`say()` semantics (all three surfaces): the call succeeds when the
+announcement is **queued**, not when it finishes playing; partial failure
+returns `ok: false` with per-satellite errors; text is capped at 500
+characters.
 
-The same `say()` behind REST and PUT is also published in-process via PropertyValues (SPEC §4.2.3) — an anchor-alarm or notification-bridge plugin makes the boat speak with no HTTP round-trip:
+## The webapp
 
-```js
-// In another Signal K plugin:
-app.onPropertyValues("signalk-wyoming.api", (values) => {
-  const latest = values.at(-1)?.value; // {version: 1, say}
-  if (!latest) return;
-  latest
-    .say({
-      text: "Anchor alarm: drag detected",
-      priority: "urgent", // jumps every queue, bypasses mute
-      targets: ["cockpit"], // omit for all satellites
-    })
-    .then((result) => {
-      // resolves on ENQUEUE: {ok, queued: ['cockpit'], errors?, suppressed?}
-    })
-    .catch((err) => {
-      // rejects only when NOTHING could be queued (TTS down, no targets,
-      // or "signalk-wyoming is stopped" — the facade stays safe across restarts)
-    });
-});
-```
+Signal K admin UI → Webapps → **Voice (Wyoming)** (`/signalk-wyoming`).
+Three screens, live-updated:
 
-Semantics (all three surfaces): promise resolves on enqueue, never on playback; partial failure resolves with `ok: false` + per-satellite `errors`; text is capped at 500 characters; `wait: true` is reserved for v1.x and rejects loudly.
+- **Status** — services (discovery status, addresses, wake models),
+  satellites (connection, state, queue depth, test-tone button), and a
+  recent activity log (announcements, commands, detections, errors).
+- **Audio** — for satellites running our image: list the device's
+  microphones and speakers (pick one to get the device string for the
+  plugin config), _record 3 s & play back_, _play tone_, and a live VU
+  meter. Recording briefly pauses the satellite (~2 s) to free the mic.
+- **Test** — type-and-say (target select, voice picker, urgent, mute
+  toggle), **record-and-transcribe** (test speech-to-text before any wake
+  word exists — the latency figure it shows is the practical benchmark for
+  choosing a whisper model), and a live wake-word detection feed.
 
-## Webapp
+Works over plain LAN HTTP; requests ride your Signal K session — if you see
+"not authorized", log in via the Signal K admin UI.
 
-Signal K admin UI → Webapps → **Voice (Wyoming)** (`/signalk-wyoming`). Three screens, live-updated over SSE:
+## Updates & offline use
 
-- **Status** — services table (discovery status, URIs, wake models), satellites table (connection, state, queue depth, test-tone button), recent activity log (announcements, commands, detections, errors).
-- **Audio** — for satellites running our image: device enumeration (`arecord -l`/`aplay -l` as dropdowns — pick one to get the ALSA device string to paste into the plugin config), _record 3 s & play back_, _play tone_, live VU meter. Recording/VU briefly pause the satellite (~2 s) to free the mic device. The webapp cannot write plugin config in v1 (SPEC §4.4).
-- **Test** — type-and-say (target multi-select, voice picker, urgent, mute toggle), **record-and-transcribe** (STT testing before any wake word exists, with per-utterance latency — the real-hardware benchmark for choosing a whisper model), and a live wake-word detection feed.
-
-Works over plain LAN HTTP (no `getUserMedia`/HTTPS requirements); requests ride the Signal K session — if you see "not authorized", log in via the Signal K admin UI.
+- The **local satellite container** updates from the plugin config panel:
+  pick a version from the dropdown (or leave `auto` to follow tested
+  releases) and use _Check for updates_ / one-click apply. The version list
+  comes from GitHub and keeps showing the last list it saw when you're
+  offline.
+- The voice services (piper/whisper/openwakeword) update the same way from
+  **their own** plugin panels.
+- After first setup nothing needs the internet: models and images are on
+  the boat. Do first starts and version changes **while you have
+  connectivity** — a never-downloaded model can't load at sea, and the
+  plugins will tell you so rather than sit silent.
 
 ## Security — read this
 
-**Wyoming has no authentication, and a satellite is an open live microphone.** Any client that can reach a satellite's `:10700` can connect and stream cabin audio — treat every satellite port like a **baby monitor**. Mitigations:
+**Wyoming has no authentication, and a satellite is an open live
+microphone.** Any device that can reach a satellite's port `10700` can
+connect and stream cabin audio — treat every satellite port like a **baby
+monitor**:
 
-- Our satellite image accepts a **single Wyoming client** at a time, and the orchestrator's always-held connection occupies that slot — a rogue LAN client finds the mic busy. **Honest gap:** the slot frees on disconnect, so a rogue client can seize the mic during the reconnect window after a drop (the orchestrator's first reconnect attempt is near-immediate to shrink it).
-- whisper/piper bind to localhost/docker network by default — only the orchestrator needs them. openwakeword must be LAN-reachable for remote satellites.
-- Isolate satellite ports from marina wifi: firewall them, or put satellites on their own VLAN / WireGuard network.
-- REST/PUT surfaces respect Signal K access control; TLS/auth on the Wyoming links themselves is out of scope for v1.
+- Our satellite image accepts a **single client** at a time, and the
+  orchestrator's always-held connection occupies that slot — a rogue LAN
+  client finds the mic busy. **Honest gap:** the slot frees on disconnect,
+  so a rogue client can seize the mic during the reconnect window after a
+  drop (the first reconnect attempt is near-immediate to shrink it).
+- whisper/piper stay on localhost by default — only this plugin needs
+  them. openwakeword must be LAN-reachable for remote satellites.
+- Keep satellite ports away from marina wifi: firewall them, or put
+  satellites on their own VLAN or WireGuard network.
+- The REST/PUT surfaces respect Signal K access control; there is no
+  TLS/auth on the Wyoming connections themselves.
 
-## Degraded modes (first-class)
+## When things are missing (degraded modes)
 
-- **TTS-only** (no whisper): announcements work; record-and-transcribe returns `503` with a hint. The recommended starter install.
-- **STT-only** (no piper): voice commands publish to `voice.command`; `say()` rejects with "TTS unavailable".
-- **Wake words configured but no wake service:** plugin-status warning + `notifications.voice.wake` alarm; clears when openwakeword appears.
-- **Service down mid-flight:** `notifications.voice.<service>` alarm + plugin status; `say()` fails loudly (never a silent drop); pipelines abort after `pipelineTimeoutMs`.
-- **Local satellite without `/dev/snd` support:** current signalk-container releases can't pass audio devices through yet — the plugin starts the container anyway, detects the empty device list, and reports it plainly in the plugin status and webapp instead of failing silently.
-- `voice.muted` suppresses normal announcements; `urgent` always plays.
+Partial installs are normal and supported:
+
+- **TTS-only** (no whisper): announcements work; record-and-transcribe
+  answers `503` with a hint. The recommended starter.
+- **STT-only** (no piper): voice commands work; `say()` fails with "TTS
+  unavailable".
+- **Wake words configured but no wake service**: a plugin-status warning
+  and a `notifications.voice.wake` alarm; clears by itself when
+  openwakeword appears.
+- **Service goes down mid-flight**: `notifications.voice.<service>` alarm +
+  plugin status; announcements fail loudly, pipelines time out cleanly.
+- **Local satellite without audio-device support**: current
+  signalk-container releases can't pass `/dev/snd` through yet — the plugin
+  starts the container anyway, detects the empty device list, and says so
+  plainly in the plugin status and webapp instead of failing silently.
 
 ## Development
 
-```bash
-npm install
-npm run build     # tsc → dist/
-npm test          # typecheck tests + vitest
-npm run ci-lint   # eslint + prettier --check
-npm run format    # prettier --write + eslint --fix
-```
-
-- **No real audio or containers needed for tests.** The Wyoming protocol implementation and a scriptable mock server live in this package and are exported as subpaths:
-  - `signalk-wyoming/protocol` — framing (`encodeEvent`/`EventDecoder`), typed events, TCP client (`WyomingConnection`, `probeWyoming`);
-  - `signalk-wyoming/mock` — `MockWyomingServer` with scriptable asr/tts/wake/satellite roles, injectable delays/disconnects/malformed frames, and an event log.
-
-  The sibling service plugins consume these as **devDependencies** for their protocol tests (their production code embeds a tiny self-contained describe ping instead).
-
-- **Publishing note:** until `signalk-wyoming` is on npm, the sibling repos reference it as `file:../signalk-wyoming` devDependencies — those must flip to a semver range before any of them publish, and their standalone CI stays red until then.
-- The webapp (`public/`) is vanilla ES modules with no build step; it is linted/formatted with the same eslint/prettier setup (browser globals).
-- Layout: `src/` (orchestrator modules — `api.ts` is the REST contract, `pipeline.ts` the wake→ASR engine, `queue.ts`/`say.ts` the announcement rules), `test/` (vitest; mock-server e2e + fake-timer unit suites), `public/` (webapp).
+Technical documentation — code layout, architecture, the protocol library
+and mock server, the in-process `say()` API for plugin authors, config
+panel build notes — lives in [DEVELOPERS.md](DEVELOPERS.md). The full
+design spec is [SPEC.md](SPEC.md); design rationale in
+[DECISIONS.md](DECISIONS.md).
 
 ## License
 
-Apache-2.0. The [wyoming-satellite image repo](https://github.com/hoeken/wyoming-satellite) is MIT (it packages upstream MIT code).
+Apache-2.0 © hoeken. The
+[wyoming-satellite image repo](https://github.com/hoeken/wyoming-satellite)
+is MIT (it packages upstream MIT code).

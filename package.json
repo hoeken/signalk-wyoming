@@ -1,6 +1,6 @@
 {
   "name": "signalk-wyoming",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Wyoming protocol voice assistant orchestrator for Signal K — voice commands in, spoken announcements out.",
   "type": "module",
   "main": "dist/index.js",
