@@ -310,8 +310,11 @@ export class PipelineEngine {
     try {
       // The session watchdog owns the overall deadline (it aborts the ASR
       // connection, which rejects this finish); the finish timeout is only
-      // a backstop, so it gets the full budget rather than the remainder.
-      ({ text } = await asr.finish(this.deps.advanced.pipelineTimeoutMs));
+      // a backstop for a vanished watchdog, so it gets the full budget plus
+      // headroom — it must never beat the watchdog to the abort.
+      ({ text } = await asr.finish(
+        this.deps.advanced.pipelineTimeoutMs + 1000,
+      ));
     } catch (err) {
       this.abortSession(
         session,

@@ -436,7 +436,9 @@ describe("full pipeline e2e (mock satellite + asr)", () => {
     const err = await sat.waitForEvent((e) => e.event.type === "error", {
       timeoutMs: 3000,
     });
-    expect(err.event.data?.code).toBe("timeout");
+    // Matched as an object so a failure prints the full payload — `text`
+    // identifies which abort path fired (seen flaking as asr-error in CI).
+    expect(err.event.data).toMatchObject({ code: "timeout" });
     await until(() => !sat.streaming);
     expect(h.pathValues("voice.command")).toEqual([]);
     const alarms = h.pathValues("notifications.voice.asr");
