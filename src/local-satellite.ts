@@ -6,10 +6,13 @@
  * services — the helper's HTTP readiness gate IS usable here
  * (readiness: {port: 10800, path: '/health'}).
  *
- * signalk-container 1.23.2 silently drops `devices`/`groupAdd`, so the
- * container gets no /dev/snd until the manager grows support; the config
- * carries the fields forward-compatibly and `checkAudioDevices()` surfaces
- * the gap honestly at runtime (M0 coordination item).
+ * `devices`/`groupAdd` need signalk-container > 1.23.2 (the
+ * feat-devices-group-add work): the manager emits the /dev/snd bind even
+ * when it runs containerized and cannot see the path locally, and its
+ * Deployment Doctor reports passthrough state. On 1.23.2 the fields are
+ * silently dropped (no drift loops — unknown fields are ignored on both
+ * sides), so the config stays forward- and backward-compatible;
+ * `checkAudioDevices()` surfaces the runtime truth either way.
  */
 
 import {
@@ -107,9 +110,10 @@ export function buildLocalSatelliteConfig(
   if (local.audioMode === "pulse-socket") {
     config.volumes = { [PULSE_SOCKET_CONTAINER_PATH]: local.hostPulseSocket };
   }
-  // Forward-compatible audio-device fields: silently dropped by
-  // signalk-container 1.23.2 (no drift loops), applied once the manager
-  // ships /dev/snd passthrough support.
+  // Audio-device fields: applied by signalk-container > 1.23.2 (which
+  // emits the /dev/snd bind even from inside a container — well-known
+  // device dirs are trusted optimistically); silently dropped by 1.23.2
+  // and older (no drift loops).
   const forward = config as ContainerConfig & {
     devices?: string[];
     groupAdd?: string[];
@@ -240,8 +244,9 @@ export interface LocalSatelliteHandle {
   needsRestart(): boolean;
   /**
    * Probe the control API's /devices; returns a warning string when the
-   * container sees no audio devices (the signalk-container passthrough gap),
-   * null when devices are present or the probe is inconclusive.
+   * container sees no audio devices (host without a sound card, or a
+   * manager that dropped the /dev/snd passthrough), null when devices
+   * are present or the probe is inconclusive.
    */
   checkAudioDevices(addresses: LocalSatelliteAddresses): Promise<string | null>;
 }
@@ -324,9 +329,11 @@ export function createLocalSatellite(
         const playback = Array.isArray(body.playback) ? body.playback : [];
         if (capture.length === 0 && playback.length === 0) {
           return (
-            "local satellite has no audio devices — signalk-container does " +
-            "not yet support /dev/snd passthrough (devices/groupAdd); audio " +
-            "will not work until the container manager ships device support"
+            "local satellite has no audio devices — either this host has " +
+            "no sound card, or the container manager dropped the /dev/snd " +
+            "passthrough (signalk-container ≤ 1.23.2 has no device " +
+            "support). Check the signalk-container Deployment Doctor's " +
+            "device-passthrough section for the specific fix"
           );
         }
         return null;
