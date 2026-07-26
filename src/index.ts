@@ -254,7 +254,7 @@ export default function plugin(
 
   return {
     id: PLUGIN_ID,
-    name: "Wyoming voice orchestrator",
+    name: "Voice Orchestrator (Wyoming)",
     description:
       "Voice in and voice out for Signal K via the Wyoming protocol: spoken announcements (say API) and wake-word voice commands.",
     schema: () => buildSchema(),
