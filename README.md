@@ -122,14 +122,14 @@ One entry per mic/speaker device on the network:
 A mic/speaker plugged into the Signal K server box; the plugin runs the
 satellite container for you. Off by default.
 
-| Setting                                       | Default        | Notes                                                                                                             |
-| --------------------------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `micDevice` / `sndDevice`                     | `auto`         | ALSA device strings — find them on the webapp **Audio** screen. `auto` = image default; mic `none` = output-only. |
-| `wakeWords`                                   | none           | As above.                                                                                                         |
-| `audioMode`                                   | `alsa`         | `alsa` for headless boxes (/dev/snd passthrough); `pulse-socket` for desktop hosts (set `hostPulseSocket`).       |
-| `feedbackSounds`                              | on             | Awake/done chimes on wake-word interactions.                                                                      |
-| `noiseSuppression` / `autoGain` / `micVolume` | image defaults | Audio tuning, under "Audio tuning" in the panel.                                                                  |
-| `tag`                                         | `auto`         | Satellite image version. `auto` runs the pinned, tested release and follows plugin updates.                       |
+| Setting                                       | Default        | Notes                                                                                                                       |
+| --------------------------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `micDevice` / `sndDevice`                     | `auto`         | ALSA device strings — find them on the webapp **Audio** screen. `auto` = image default; mic `none` = output-only.           |
+| `wakeWords`                                   | none           | As above.                                                                                                                   |
+| `audioMode`                                   | `alsa`         | `alsa` for headless boxes (/dev/snd passthrough); `pulse-socket` for desktop hosts (set `hostPulseSocket`).                 |
+| `feedbackSounds`                              | on             | Awake/done chimes on wake-word interactions.                                                                                |
+| `noiseSuppression` / `autoGain` / `micVolume` | image defaults | Audio tuning, under "Audio tuning" in the panel.                                                                            |
+| `tag`                                         | `auto`         | Satellite image version. `auto` tracks the newest release (`latest` + digest tracking); pin an explicit version to opt out. |
 
 ### Services
 

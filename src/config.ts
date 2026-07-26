@@ -50,7 +50,7 @@ export interface LocalSatelliteConfig {
   autoGain?: number;
   /** Mic volume multiplier (unset = image default). */
   micVolume?: number;
-  /** Image tag; 'auto' resolves to the pinned release. */
+  /** Image tag; 'auto' runs the floating `latest` with digest tracking. */
   tag: string;
 }
 

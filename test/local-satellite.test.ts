@@ -5,9 +5,10 @@ import {
   buildLocalSatelliteEnv,
   containerWakeUri,
   createLocalSatellite,
+  fetchSatelliteImageVersion,
   fetchSatelliteVersions,
+  LOCAL_SATELLITE_FLOATING_TAG,
   LOCAL_SATELLITE_IMAGE,
-  LOCAL_SATELLITE_PINNED_TAG,
   SATELLITE_TAGS_URL,
   type LocalSatelliteBuildInputs,
 } from "../src/local-satellite.js";
@@ -153,8 +154,12 @@ describe("buildLocalSatelliteConfig", () => {
     });
   });
 
-  it("pins the 'auto' tag to a real release", () => {
-    expect(LOCAL_SATELLITE_PINNED_TAG).toMatch(/^\d+\.\d+\.\d+$/);
+  it("enables digest tracking so 'auto' → latest follows releases", () => {
+    const config = buildLocalSatelliteConfig(
+      LOCAL_SATELLITE_FLOATING_TAG,
+      inputs(),
+    );
+    expect(config.autoUpdateOnFloatingTag).toBe(true);
   });
 });
 
@@ -190,6 +195,40 @@ describe("fetchSatelliteVersions", () => {
   });
 });
 
+describe("fetchSatelliteImageVersion", () => {
+  const health = (body: unknown, ok = true): typeof fetch =>
+    vi.fn(async () => ({
+      ok,
+      status: ok ? 200 : 500,
+      json: async () => body,
+    })) as unknown as typeof fetch;
+
+  it("reads `version` from the control API /health", async () => {
+    const fetchImpl = health({ status: "ok", version: "0.2.0" });
+    await expect(
+      fetchSatelliteImageVersion("http://127.0.0.1:10800", fetchImpl),
+    ).resolves.toBe("0.2.0");
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://127.0.0.1:10800/health",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("returns null on HTTP failure, malformed body, or network error", async () => {
+    await expect(
+      fetchSatelliteImageVersion("http://x", health({}, false)),
+    ).resolves.toBeNull();
+    await expect(
+      fetchSatelliteImageVersion("http://x", health({ version: 7 })),
+    ).resolves.toBeNull();
+    await expect(
+      fetchSatelliteImageVersion("http://x", (async () => {
+        throw new Error("ECONNREFUSED");
+      }) as unknown as typeof fetch),
+    ).resolves.toBeNull();
+  });
+});
+
 describe("update-detection registration", () => {
   const app = {
     debug: () => {},
@@ -205,13 +244,24 @@ describe("update-detection registration", () => {
       fetchImpl,
     });
 
-  it("compares the resolved tag — 'auto' maps to the pinned release", () => {
+  it("'auto' maps to the floating latest; explicit tags pass through", () => {
     const handle = makeHandle("auto", githubTags([]));
     expect(handle.container.options.updates?.currentTag?.()).toBe(
-      LOCAL_SATELLITE_PINNED_TAG,
+      LOCAL_SATELLITE_FLOATING_TAG,
+    );
+    expect(handle.container.options.resolveTag?.("auto")).toBe(
+      LOCAL_SATELLITE_FLOATING_TAG,
     );
     const pinned = makeHandle("0.1.0", githubTags([]));
     expect(pinned.container.options.updates?.currentTag?.()).toBe("0.1.0");
+    expect(pinned.container.options.resolveTag?.("0.1.0")).toBe("0.1.0");
+  });
+
+  it("currentVersion is null before start (no control address yet)", async () => {
+    const handle = makeHandle("auto", githubTags([]));
+    await expect(
+      handle.container.options.updates?.currentVersion?.(),
+    ).resolves.toBeNull();
   });
 
   it("uses a custom source: latest stable GitHub tag (repo has no Releases)", async () => {

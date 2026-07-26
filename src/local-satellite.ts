@@ -25,7 +25,15 @@ import { SATELLITE_CONTROL_PORT, WYOMING_SATELLITE_PORT } from "./config.js";
 import { parseWyomingUri } from "./protocol/client.js";
 
 export const LOCAL_SATELLITE_IMAGE = "ghcr.io/hoeken/wyoming-satellite";
-export const LOCAL_SATELLITE_PINNED_TAG = "0.1.1";
+/**
+ * Tag the `auto` policy runs: the floating `latest` (ghcr moves it on every
+ * non-prerelease release; prereleases don't). Paired with
+ * `autoUpdateOnFloatingTag` in the container config, so signalk-container's
+ * digest-drift check recreates the container when the tag moves — satellite
+ * releases flow to `auto` users without a plugin release. Explicit semver
+ * tags from the version dropdown remain available as the opt-out.
+ */
+export const LOCAL_SATELLITE_FLOATING_TAG = "latest";
 export const LOCAL_SATELLITE_CONTAINER_NAME = "wyoming-satellite";
 /** In-container alias for the Signal K host (extraHosts host-gateway). */
 export const SK_HOST_ALIAS = "skhost";
@@ -100,6 +108,11 @@ export function buildLocalSatelliteConfig(
     signalkAccessiblePorts: [WYOMING_SATELLITE_PORT, SATELLITE_CONTROL_PORT],
     restart: "unless-stopped",
     resources: { memory: "256m", memorySwap: "256m" },
+    // Digest tracking for the `auto` → `latest` policy: signalk-container
+    // re-pulls a floating tag on reconcile and recreates on image-id
+    // drift (skipped silently offline). Inert for explicit semver tags,
+    // so it's safe to set unconditionally.
+    autoUpdateOnFloatingTag: true,
   };
   if (inputs.wakeUri !== null && local.wakeWords.length > 0) {
     // Reaches the host's openwakeword from inside the container; works for
@@ -184,6 +197,32 @@ export async function fetchSatelliteVersions(
     });
 }
 
+/**
+ * Image version reported by the running satellite's control API
+ * (`GET /health` → `version`, the VERSION file baked into the image);
+ * null when unreachable or malformed. Feeds update detection's
+ * `currentVersion`: with `auto` running the floating `latest` tag, the
+ * running image's own version is the only meaningful "current" to
+ * compare against the newest GitHub tag.
+ */
+export async function fetchSatelliteImageVersion(
+  controlBase: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string | null> {
+  try {
+    const res = await fetchImpl(`${controlBase}/health`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { version?: unknown };
+    return typeof body.version === "string" && body.version !== ""
+      ? body.version
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Update-detection strategy: latest stable image tag from GitHub. */
 async function latestSatelliteVersion(
   fetchImpl: typeof fetch,
@@ -263,6 +302,9 @@ export function createLocalSatellite(
   const envKey = (): string =>
     JSON.stringify(buildLocalSatelliteEnv(currentInputs()));
   let startedEnvKey: string | null = null;
+  // Control API base URL of the running container, captured by start() —
+  // feeds the update service's currentVersion probe.
+  let controlBase: string | null = null;
   const container = new ManagedContainer({
     app: deps.app,
     pluginId: "signalk-wyoming",
@@ -270,7 +312,7 @@ export function createLocalSatellite(
     image: LOCAL_SATELLITE_IMAGE,
     defaultTag: "auto",
     resolveTag: (requested) =>
-      requested === "auto" ? LOCAL_SATELLITE_PINNED_TAG : requested,
+      requested === "auto" ? LOCAL_SATELLITE_FLOATING_TAG : requested,
     buildConfig: (tag) => buildLocalSatelliteConfig(tag, currentInputs()),
     // Control API is HTTP — helper readiness applies (unlike Wyoming TCP).
     readiness: { port: SATELLITE_CONTROL_PORT, path: "/health" },
@@ -278,9 +320,19 @@ export function createLocalSatellite(
       versionSource: {
         custom: { fetch: () => latestSatelliteVersion(fetchImpl) },
       },
-      // Compare the resolved tag — "auto" is an alias, not a version.
+      // `auto` runs the floating `latest`, so the tag says nothing about
+      // what is running — the image version reported by the control API
+      // is the comparable "current" (the comparator prefers
+      // currentVersion). currentTag remains the fallback for explicit
+      // semver tags and for before the container is reachable.
       currentTag: () =>
-        deps.local.tag === "auto" ? LOCAL_SATELLITE_PINNED_TAG : deps.local.tag,
+        deps.local.tag === "auto"
+          ? LOCAL_SATELLITE_FLOATING_TAG
+          : deps.local.tag,
+      currentVersion: () =>
+        controlBase === null
+          ? Promise.resolve(null)
+          : fetchSatelliteImageVersion(controlBase, fetchImpl),
     },
   });
 
@@ -299,6 +351,7 @@ export function createLocalSatellite(
       }
       const [host, port] = splitHostPort(wyoming);
       const [controlHost, controlPort] = splitHostPort(control);
+      controlBase = `http://${controlHost}:${controlPort}`;
       return { host, port, controlHost, controlPort };
     },
 
