@@ -1,3 +1,27 @@
+# v0.2.1
+
+Nothing to reconfigure. The one behavior change: with the local satellite's
+version set to `auto`, new satellite releases now install automatically
+instead of waiting for a plugin update.
+
+## Changed
+
+- **`auto` local-satellite version now follows satellite releases
+  directly.** Previously `auto` ran a release pinned inside the plugin, so
+  satellite fixes waited on a plugin update. It now runs the floating
+  `latest` image with digest tracking: when a new satellite release is
+  published, the container updates on the next periodic check (skipped
+  silently while offline). "Check for updates" now compares against the
+  version the running satellite actually reports. Pick an explicit version
+  from the panel's dropdown to stay pinned.
+- **Renamed to "Voice Orchestrator (Wyoming)"** in the Plugin Config list,
+  and the App Store listing now recommends the companion plugins
+  (signalk-piper, signalk-whisper, signalk-openwakeword).
+- **More accurate "no audio devices" warning.** It no longer blames the
+  container manager unconditionally — a host without a sound card reads the
+  same — and it points at signalk-container's Deployment Doctor for the
+  passthrough fix when the manager is the cause.
+
 # v0.2.0
 
 Nothing to reconfigure — existing settings carry over unchanged. The plugin
