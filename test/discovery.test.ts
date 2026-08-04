@@ -176,3 +176,66 @@ describe("ServiceDirectory", () => {
     });
   });
 });
+
+describe("advertised wake words (§3.1 optional extension)", () => {
+  const pvw = (words: unknown) => ({
+    timestamp: Date.now(),
+    setter: "signalk-openwakeword",
+    name: "wyoming-service",
+    value: {
+      plugin: "signalk-openwakeword",
+      type: "wake",
+      uri: "tcp://127.0.0.1:10400",
+      status: "ready",
+      wakeWords: words,
+    },
+  });
+
+  it("carries the advertised wake words through to the resolved service", () => {
+    const { directory, push } = makeDirectory();
+    push([pvw(["hey_moin"])]);
+    expect(directory.get("wake")?.wakeWords).toEqual(["hey_moin"]);
+  });
+
+  it("leaves wakeWords undefined when the service does not advertise any", () => {
+    const { directory, push } = makeDirectory();
+    push([
+      pv("signalk-openwakeword", "wake", "tcp://127.0.0.1:10400", "ready"),
+    ]);
+    expect(directory.get("wake")?.wakeWords).toBeUndefined();
+  });
+
+  // The spec explicitly allows unknown fields, so a malformed one must never
+  // break discovery — the service is still usable, just without inheritance.
+  it.each([
+    ["not an array", "hey_moin"],
+    ["an empty array", []],
+    ["entries that are not strings", [1, 2]],
+    ["blank strings", ["   "]],
+  ])("ignores wakeWords that is %s", (_label, words) => {
+    const { directory, push } = makeDirectory();
+    push([pvw(words)]);
+    expect(directory.get("wake")?.uri).toBe("tcp://127.0.0.1:10400");
+    expect(directory.get("wake")?.wakeWords).toBeUndefined();
+  });
+
+  it("keeps only the well-formed entries", () => {
+    const { directory, push } = makeDirectory();
+    push([pvw(["hey_moin", "", 7, "okay_nabu"])]);
+    expect(directory.get("wake")?.wakeWords).toEqual(["hey_moin", "okay_nabu"]);
+  });
+
+  // Inheriting satellites re-wire on this event, so a changed wake word has
+  // to count as a change even though the URI and status are identical.
+  it("emits change when only the wake words differ", () => {
+    const { directory, push } = makeDirectory();
+    const seen: (string[] | undefined)[] = [];
+    directory.on("change", (type, resolved) => {
+      if (type === "wake") seen.push(resolved?.wakeWords);
+    });
+    push([pvw(["hey_moin"])]);
+    push([pvw(["hey_moin"])]); // identical: no second event
+    push([pvw(["okay_nabu"])]);
+    expect(seen).toEqual([["hey_moin"], ["okay_nabu"]]);
+  });
+});

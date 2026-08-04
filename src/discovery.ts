@@ -20,6 +20,12 @@ export interface ResolvedService {
   plugin?: string;
   status: ServiceStatus;
   source: "auto" | "manual";
+  /**
+   * Wake words the service advertises (wake type only, optional §3.1
+   * extension). Satellites that do not set their own inherit these, so the
+   * operator configures the boat's wake word once rather than per satellite.
+   */
+  wakeWords?: string[];
 }
 
 export interface ServiceSnapshotEntry {
@@ -27,6 +33,8 @@ export interface ServiceSnapshotEntry {
   status: ServiceStatus | null;
   source: "auto" | "manual" | null;
   plugin?: string;
+  /** Wake words advertised by a `wake` service; what satellites inherit. */
+  wakeWords?: string[];
 }
 
 export type ServiceSnapshot = Record<ServiceType, ServiceSnapshotEntry>;
@@ -43,6 +51,21 @@ interface Emission {
   uri: string;
   status: "starting" | "ready" | "stopped" | "error";
   order: number;
+  wakeWords?: string[];
+}
+
+/**
+ * Optional §3.1 extension: the wake service advertises the boat's configured
+ * wake words. Ignored unless it is a well-formed non-empty list of strings —
+ * an unknown or malformed field must never break discovery, since the spec
+ * explicitly allows plugins to add fields we do not know about.
+ */
+function parseWakeWords(v: unknown): string[] | undefined {
+  if (!Array.isArray(v) || v.length === 0) return undefined;
+  const words = v.filter(
+    (w): w is string => typeof w === "string" && w.trim() !== "",
+  );
+  return words.length > 0 ? words : undefined;
 }
 
 function isServiceType(v: unknown): v is ServiceType {
@@ -65,12 +88,14 @@ function parseEmission(entry: unknown, order: number): Emission | null {
   ) {
     return null;
   }
+  const wakeWords = v.type === "wake" ? parseWakeWords(v.wakeWords) : undefined;
   return {
     plugin: v.plugin,
     type: v.type,
     uri: v.uri,
     status: v.status,
     order,
+    ...(wakeWords === undefined ? {} : { wakeWords }),
   };
 }
 
@@ -157,6 +182,9 @@ export class ServiceDirectory extends EventEmitter {
           source: resolved.source,
         };
         if (resolved.plugin !== undefined) entry.plugin = resolved.plugin;
+        if (resolved.wakeWords !== undefined) {
+          entry.wakeWords = resolved.wakeWords;
+        }
         out[type] = entry;
       }
     }
@@ -184,6 +212,9 @@ export class ServiceDirectory extends EventEmitter {
               plugin: best.plugin,
               status: best.status as ServiceStatus,
               source: "auto",
+              ...(best.wakeWords === undefined
+                ? {}
+                : { wakeWords: best.wakeWords }),
             };
       const prev = this.resolved[type];
       if (!sameResolved(prev, next)) {
@@ -203,5 +234,18 @@ function sameResolved(
   b: ResolvedService | null,
 ): boolean {
   if (a === null || b === null) return a === b;
-  return a.uri === b.uri && a.status === b.status && a.plugin === b.plugin;
+  return (
+    a.uri === b.uri &&
+    a.status === b.status &&
+    a.plugin === b.plugin &&
+    // Inheriting satellites re-wire on this, so a wake-word change has to
+    // count as a change — otherwise editing the wake word in the wake plugin
+    // would be silently ignored until something else moved.
+    sameWords(a.wakeWords, b.wakeWords)
+  );
+}
+
+function sameWords(a?: string[], b?: string[]): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return a.length === b.length && a.every((w, i) => w === b[i]);
 }

@@ -565,3 +565,88 @@ describe("POST /api/transcribe (record → whisper, real TranscribeSession)", ()
     expect((noAsr.body as { error: string }).error).toMatch(/ASR unavailable/);
   });
 });
+
+describe("wake words inherited from the wake service (§3.1)", () => {
+  const announce = (h: ReturnType<typeof makeApp>, words?: string[]): void => {
+    for (const cb of h.propertySubs.get("wyoming-service") ?? []) {
+      cb([
+        undefined,
+        {
+          value: {
+            plugin: "signalk-openwakeword",
+            type: "wake",
+            uri: "tcp://127.0.0.1:10400",
+            status: "ready",
+            ...(words === undefined ? {} : { wakeWords: words }),
+          },
+        },
+      ]);
+    }
+  };
+
+  /** run-satellite = wake mode; pause-satellite = output-only. */
+  const armed = (sat: MockWyomingServer): boolean =>
+    sat.log.some((e) => e.event.type === "run-satellite");
+
+  // The point of the whole change: set the boat's wake word once, in the wake
+  // plugin, instead of repeating it on every satellite.
+  it("arms a satellite that sets no wakeWords of its own", async () => {
+    const sat = await startServer({ role: "satellite" });
+    const h = makeApp();
+    const p = construct(h.app);
+    // Announced after start(), the order a real boot takes: the plugin
+    // subscribes during start() and PropertyValues replays to it.
+    p.start({ satellites: [{ id: "s1", host: "127.0.0.1", port: sat.port }] });
+    announce(h, ["hey_moin"]);
+    await awaitClaimed(sat);
+    await until(() => sat.log.length >= 2);
+    expect(armed(sat)).toBe(true);
+  });
+
+  // Multi-room boats keep working: an explicit list is never overridden.
+  it("leaves an explicit wakeWords list alone", async () => {
+    const sat = await startServer({ role: "satellite" });
+    const h = makeApp();
+    const p = construct(h.app);
+    p.start({
+      satellites: [
+        { id: "s1", host: "127.0.0.1", port: sat.port, wakeWords: ["alexa"] },
+      ],
+    });
+    announce(h, ["hey_moin"]);
+    await awaitClaimed(sat);
+    await until(() => sat.log.length >= 2);
+    expect(armed(sat)).toBe(true);
+  });
+
+  // An explicit [] is how a speaker-only satellite opts out; it must NOT
+  // inherit, or enabling a wake word would open microphones the operator
+  // deliberately left closed.
+  it("honours an explicit empty list as output-only", async () => {
+    const sat = await startServer({ role: "satellite" });
+    const h = makeApp();
+    const p = construct(h.app);
+    p.start({
+      satellites: [
+        { id: "s1", host: "127.0.0.1", port: sat.port, wakeWords: [] },
+      ],
+    });
+    announce(h, ["hey_moin"]);
+    await awaitClaimed(sat);
+    await until(() => sat.log.length >= 2);
+    expect(armed(sat)).toBe(false);
+  });
+
+  // Without a wake service advertising words there is nothing to inherit, so
+  // an unconfigured satellite stays output-only rather than half-armed.
+  it("stays output-only while nothing advertises wake words", async () => {
+    const sat = await startServer({ role: "satellite" });
+    const h = makeApp();
+    const p = construct(h.app);
+    p.start({ satellites: [{ id: "s1", host: "127.0.0.1", port: sat.port }] });
+    await awaitClaimed(sat);
+    await until(() => sat.log.length >= 2);
+    expect(armed(sat)).toBe(false);
+    expect(p.statusMessage()).not.toMatch(/WARNING/);
+  });
+});

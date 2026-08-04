@@ -171,6 +171,20 @@ export default function plugin(
     }
   };
 
+  /**
+   * The wake words a satellite should actually listen for.
+   *
+   * Omitting `wakeWords` means "follow the boat's wake service", so the
+   * operator sets the wake word once in the wake plugin instead of repeating
+   * it for every satellite — the commonest setup by far, and previously a
+   * silent mismatch when the two disagreed. An explicit list still wins, and
+   * an explicit empty list still means "no wake detection here".
+   */
+  const wakeWordsFor = (entry: SatelliteConfig): string[] => {
+    if (entry.wakeWords !== undefined) return entry.wakeWords;
+    return runtime.directory?.get("wake")?.wakeWords ?? [];
+  };
+
   const makeSatellite = (entry: SatelliteConfig): void => {
     const satellite = new RemoteSatellite(
       {
@@ -178,7 +192,7 @@ export default function plugin(
         name: entry.name,
         host: entry.host,
         port: entry.port,
-        wakeWords: entry.wakeWords,
+        wakeWords: wakeWordsFor(entry),
         hasControlApi: entry.hasControlApi,
         controlPort: entry.controlPort,
       },
@@ -301,15 +315,25 @@ export default function plugin(
       runtime.hub = new EventHub();
 
       // Satellites that expect a wake service (spec §4.3 degraded mode).
-      const wakeSatelliteIds = config.satellites
-        .filter((s) => (s.wakeWords?.length ?? 0) > 0)
-        .map((s) => s.id);
-      if (
-        config.localSatellite.enabled &&
-        config.localSatellite.wakeWords.length > 0
-      ) {
-        wakeSatelliteIds.push(localSatelliteEntry().id);
-      }
+      //
+      // An explicit non-empty list always expects one. An omitted list means
+      // "inherit", which only expects a wake service once one is actually
+      // advertising words — otherwise a plain output-only satellite on a boat
+      // with no wake plugin would warn about a service it never asked for.
+      const wakeSatelliteIds = (): string[] =>
+        config.satellites
+          .filter((s) =>
+            s.wakeWords === undefined
+              ? (runtime.directory?.get("wake")?.wakeWords?.length ?? 0) > 0
+              : s.wakeWords.length > 0,
+          )
+          .map((s) => s.id)
+          .concat(
+            config.localSatellite.enabled &&
+              config.localSatellite.wakeWords.length > 0
+              ? [localSatelliteEntry().id]
+              : [],
+          );
 
       // --- local satellite plumbing (referenced by discovery below) ---
       // Live getter: read on every container (re)start so wake wiring follows
@@ -389,6 +413,39 @@ export default function plugin(
         startSafely(app, () => next);
       };
 
+      /**
+       * Rebuild satellites that inherit their wake words when the advertised
+       * list changes. RemoteSatellite freezes wakeWords (and derives its mode)
+       * at construction, so changing the boat's wake word has to replace the
+       * client — otherwise the operator changes it in the wake plugin and the
+       * satellite keeps listening for the old one until a full restart.
+       */
+      const rewireInheritedWakeWords = (): void => {
+        if (!runtime.running) return;
+        const inherited = runtime.directory?.get("wake")?.wakeWords ?? [];
+        for (const entry of config.satellites) {
+          if (entry.wakeWords !== undefined) continue; // explicit: not ours
+          const existing = runtime.satellites.get(entry.id);
+          if (existing === undefined) continue;
+          const current = existing.satellite.wakeWords;
+          if (
+            current.length === inherited.length &&
+            current.every((w, i) => w === inherited[i])
+          ) {
+            continue;
+          }
+          app.debug(
+            `satellite ${entry.id}: wake words changed to ` +
+              `[${inherited.join(", ")}] — reconnecting`,
+          );
+          existing.queue.clear();
+          existing.satellite.cancelPlayback();
+          existing.satellite.close();
+          runtime.satellites.delete(entry.id);
+          makeSatellite(entry);
+        }
+      };
+
       // --- service discovery ---
       runtime.directory = new ServiceDirectory({
         overrides: config.services,
@@ -402,8 +459,9 @@ export default function plugin(
       runtime.directory.on("change", (type, resolved) => {
         runtime.hub?.emit("service", { type, service: resolved });
         if (type === "wake") {
-          updateWakeWarning(wakeSatelliteIds);
+          updateWakeWarning(wakeSatelliteIds());
           rewireLocalWake();
+          rewireInheritedWakeWords();
         }
         app.setPluginStatus(statusSummary());
       });
@@ -473,10 +531,14 @@ export default function plugin(
       });
 
       // --- satellites ---
+      // An inheriting satellite picks up whatever discovery has already
+      // resolved; if the wake plugin announces later (or changes its wake
+      // word), rewireInheritedWakeWords rebuilds the client — so start order
+      // never matters, per §3.1.
       for (const entry of config.satellites) {
         makeSatellite(entry);
       }
-      updateWakeWarning(wakeSatelliteIds);
+      updateWakeWarning(wakeSatelliteIds());
 
       // --- local satellite container (async; startSafely reports failures) ---
       if (config.localSatellite.enabled) {

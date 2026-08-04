@@ -171,6 +171,16 @@ app.emitPropertyValue('wyoming-service', {
 })
 ```
 
+**`wake` services may also advertise `wakeWords`** — the boat's configured
+wake word names, e.g. `wakeWords: ['okay_nabu']`. Satellites that do not set
+their own `wakeWords` inherit these, so the operator configures the boat's
+wake word once in the wake plugin instead of repeating it per satellite (a
+mismatch between the two is otherwise silent: the satellite simply never
+wakes). The field is optional and additive — omit it when nothing is
+configured, since an empty list is indistinguishable from "deliberately no
+wake detection" on the consumer side. Orchestrators must tolerate its absence
+and ignore a malformed value.
+
 PropertyValues replays history to late subscribers, so start order never matters. Consumers keep the **latest value per `plugin`**. Plugins emit again on every status change (including `stopped` in their `stop()` hook). Third-party plugins may advertise additional Wyoming services under the same convention.
 
 **Emission discipline:** the server enforces a **global** cap (`MAX_VALUES_COUNT = 1000`, counted across *all* property names) and `emitPropertyValue` **throws** once it's hit — for every plugin in the process, not just the offender. Plugins therefore emit only on meaningful state transitions and debounce flaps (error → ready → error within ~500 ms collapses to a single emission); pathological status churn is logged as a warning instead of emitted.
