@@ -253,6 +253,11 @@ export function registerApiRoutes(router: ApiRouter, deps: ApiDeps): void {
           port: satellite.port,
           hasControlApi: satellite.hasControlApi,
           queueDepth: queue.depth,
+          // What this satellite is really listening for, after inheriting
+          // from the wake service. Reported so an operator can see the
+          // effective value instead of inferring it from two plugins.
+          wakeWords: satellite.wakeWords,
+          mode: satellite.mode,
         }),
       );
       res.status(200).json(list);

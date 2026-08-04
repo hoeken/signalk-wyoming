@@ -21,7 +21,17 @@ export interface SatelliteConfig {
   name: string;
   host: string;
   port: number;
-  /** Wake word names this satellite listens for (image WAKE_WORD_NAME / oww model names). */
+  /**
+   * Wake word names this satellite listens for (image WAKE_WORD_NAME / oww
+   * model names).
+   *
+   * Three states, deliberately distinct:
+   *   - omitted   → inherit whatever the wake service advertises, so the
+   *                 boat's wake word is configured once in the wake plugin
+   *                 rather than repeated here for every satellite;
+   *   - `[]`      → deliberately no wake detection (a speaker-only satellite);
+   *   - non-empty → this satellite's own wake words, overriding the service.
+   */
   wakeWords?: string[];
   /**
    * The satellite runs our image and serves the control API (SPEC §4.4/§6:
@@ -391,7 +401,10 @@ export function buildSchema(): Record<string, unknown> {
               type: "array",
               title: "Wake words",
               description:
-                "openWakeWord model names this satellite listens for (e.g. okay_nabu). Leave empty for announce-only satellites.",
+                "Leave this alone and the satellite listens for whatever the " +
+                "wake word plugin is set to — configure the boat's wake word " +
+                "once, there. Set model names here (e.g. okay_nabu) only to " +
+                "give this satellite different ones.",
               items: { type: "string" },
               default: [],
             },
