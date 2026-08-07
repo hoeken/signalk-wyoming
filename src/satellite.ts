@@ -139,6 +139,8 @@ export class RemoteSatellite {
   readonly mode: SatelliteMode;
 
   state: SatelliteState = "disconnected";
+  /** State we last logged a mic-chunk drop for (log once per state, not per chunk). */
+  private droppedChunkState: SatelliteState | null = null;
   connected = false;
   /** Latest info response (includes wake models merged by the satellite). */
   satInfo: Info | null = null;
@@ -200,6 +202,11 @@ export class RemoteSatellite {
   /** Pipeline engine hook (wave G): externally drive listening/transcribing. */
   setState(state: SatelliteState): void {
     if (this.state === state) return;
+    // Log every transition: mic chunks are gated on this state, so a satellite
+    // stuck off `idle` silently drops every wake that follows. Without the
+    // trail there is nothing to distinguish that from the satellite never
+    // sending. Gated by the plugin's `debug` setting like all deps.log output.
+    this.deps.log(`state ${this.state} -> ${state}`);
     this.state = state;
     this.deps.onEvent(this, { type: "state", state });
   }
@@ -400,7 +407,13 @@ export class RemoteSatellite {
     if (chunk !== undefined) {
       // Mic audio is only meaningful while a pipeline is active.
       if (this.state === "listening" || this.state === "transcribing") {
+        this.droppedChunkState = null;
         this.deps.onEvent(this, { type: "audio-chunk", chunk });
+      } else if (this.droppedChunkState !== this.state) {
+        // Once per state, not per chunk — a satellite streaming into a state
+        // that gates mic audio off is a silent failure worth one line.
+        this.droppedChunkState = this.state;
+        this.deps.log(`dropping mic chunks in state=${this.state}`);
       }
       return;
     }
