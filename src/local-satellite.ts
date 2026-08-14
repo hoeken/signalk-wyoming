@@ -85,6 +85,14 @@ export function buildLocalSatelliteEnv(
   }
   if (local.autoGain !== undefined) env.AUTO_GAIN = String(local.autoGain);
   if (local.micVolume !== undefined) env.MIC_VOLUME = String(local.micVolume);
+  // Hardware mixer levels the image re-asserts on every satellite start —
+  // NOT the same thing as MIC_VOLUME, which is a software multiplier.
+  if (local.sndMixerVolume !== undefined) {
+    env.SND_MIXER_VOLUME = String(local.sndMixerVolume);
+  }
+  if (local.micMixerVolume !== undefined) {
+    env.MIC_MIXER_VOLUME = String(local.micMixerVolume);
+  }
   if (!local.feedbackSounds) {
     env.AWAKE_WAV = "none";
     env.DONE_WAV = "none";

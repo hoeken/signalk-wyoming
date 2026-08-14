@@ -60,6 +60,20 @@ export interface LocalSatelliteConfig {
   autoGain?: number;
   /** Mic volume multiplier (unset = image default). */
   micVolume?: number;
+  /**
+   * ALSA *hardware* speaker level 0-100, asserted on every satellite start.
+   *
+   * Distinct from `micVolume`, which is a software multiplier applied to
+   * samples: these two drive the card's own mixer. They exist because ALSA
+   * mixer state is host state that does not stay put — udev runs
+   * `alsactl restore` on every card enumeration, and a card with no saved
+   * state gets alsactl's default init, which on a USB speakerphone can mean
+   * −20 dB playback. That reads as "the speaker stopped working" with nothing
+   * in any log to explain it.
+   */
+  sndMixerVolume?: number;
+  /** ALSA hardware mic level 0-100, asserted on every satellite start. */
+  micMixerVolume?: number;
   /** Image tag; 'auto' runs the floating `latest` with digest tracking. */
   tag: string;
 }
@@ -111,6 +125,12 @@ export const DEFAULT_LOCAL_SATELLITE: LocalSatelliteConfig = {
   audioMode: "alsa",
   feedbackSounds: true,
   hostPulseSocket: "/run/user/1000/pulse/native",
+  // Asserted on the card's own mixer at every satellite start. Defaulting to
+  // full scale is deliberate: the failure these fix is "the speaker went
+  // quiet on its own", and a default that left the mixer untouched would
+  // leave everyone exposed to it. Lower them if the device clips.
+  sndMixerVolume: 100,
+  micMixerVolume: 100,
   tag: "auto",
 };
 
@@ -248,6 +268,30 @@ function parseServiceSetting(v: unknown, key: string): string {
   return v;
 }
 
+/**
+ * A 0-100 hardware mixer percentage, defaulting to full scale.
+ *
+ * Always resolves to a number: the whole point is that the card's level is
+ * asserted rather than inherited from whatever host state happens to exist.
+ * `audioMode: 'pulse-socket'` needs no opt-out — its device string names no
+ * card, so the image logs that it has nothing to set and moves on.
+ */
+function mixerPercent(
+  raw: Record<string, unknown>,
+  key: "sndMixerVolume" | "micMixerVolume",
+  context: string,
+): number | undefined {
+  const v = raw[key];
+  if (v === undefined || v === null) return DEFAULT_LOCAL_SATELLITE[key];
+  if (typeof v !== "number" || !Number.isFinite(v)) {
+    throw new Error(`${context}.${key} must be a number`);
+  }
+  if (v < 0 || v > 100) {
+    throw new Error(`${context}.${key} must be between 0 and 100`);
+  }
+  return v;
+}
+
 function parseLocalSatellite(raw: unknown): LocalSatelliteConfig {
   if (raw === undefined || raw === null) return { ...DEFAULT_LOCAL_SATELLITE };
   if (!isObject(raw)) throw new Error("localSatellite must be an object");
@@ -269,6 +313,8 @@ function parseLocalSatellite(raw: unknown): LocalSatelliteConfig {
       DEFAULT_LOCAL_SATELLITE.hostPulseSocket,
       context,
     ),
+    sndMixerVolume: mixerPercent(raw, "sndMixerVolume", context),
+    micMixerVolume: mixerPercent(raw, "micMixerVolume", context),
     tag: optionalString(raw, "tag", "auto", context),
   };
   for (const key of ["noiseSuppression", "autoGain", "micVolume"] as const) {
@@ -451,6 +497,30 @@ export function buildSchema(): Record<string, unknown> {
               "and this satellite only speaks announcements",
             items: { type: "string" },
             default: [],
+          },
+          sndMixerVolume: {
+            type: "number",
+            title: "Speaker volume (%)",
+            minimum: 0,
+            maximum: 100,
+            default: DEFAULT_LOCAL_SATELLITE.sndMixerVolume,
+            description:
+              "Hardware ALSA level for the speaker, re-applied every time the " +
+              "satellite starts. ALSA mixer state does not survive on its own " +
+              "— a card that re-enumerates gets reset by the host's alsactl, " +
+              "which on USB speakerphones can drop playback to -20 dB and look " +
+              "exactly like a broken speaker",
+          },
+          micMixerVolume: {
+            type: "number",
+            title: "Microphone volume (%)",
+            minimum: 0,
+            maximum: 100,
+            default: DEFAULT_LOCAL_SATELLITE.micMixerVolume,
+            description:
+              "Hardware ALSA capture level, re-applied every time the satellite " +
+              "starts. Lower it if the microphone clips; this is the card's own " +
+              "gain, not the software multiplier below",
           },
           audioMode: {
             type: "string",

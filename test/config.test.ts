@@ -233,6 +233,33 @@ describe("parseConfig services / defaults / advanced / localSatellite", () => {
     );
   });
 
+  it("defaults the hardware mixer levels to full scale", () => {
+    // Deliberately not "leave the card alone": no default is what let a USB
+    // speakerphone sit at -20 dB and read as a dead speaker.
+    const cfg = parseConfig({ localSatellite: { enabled: true } });
+    expect(cfg.localSatellite.sndMixerVolume).toBe(100);
+    expect(cfg.localSatellite.micMixerVolume).toBe(100);
+  });
+
+  it("parses explicit mixer levels, including 0", () => {
+    const cfg = parseConfig({
+      localSatellite: { sndMixerVolume: 0, micMixerVolume: 65 },
+    });
+    expect(cfg.localSatellite.sndMixerVolume).toBe(0);
+    expect(cfg.localSatellite.micMixerVolume).toBe(65);
+  });
+
+  it("rejects out-of-range and non-numeric mixer levels", () => {
+    for (const bad of [101, -1]) {
+      expect(() =>
+        parseConfig({ localSatellite: { sndMixerVolume: bad } }),
+      ).toThrow(/sndMixerVolume must be between 0 and 100/);
+    }
+    expect(() =>
+      parseConfig({ localSatellite: { micMixerVolume: "loud" } }),
+    ).toThrow(/micMixerVolume must be a number/);
+  });
+
   it("ignores unknown top-level fields", () => {
     expect(() => parseConfig({ bogus: true, satellites: [] })).not.toThrow();
   });

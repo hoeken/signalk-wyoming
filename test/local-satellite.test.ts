@@ -104,6 +104,38 @@ describe("buildLocalSatelliteEnv", () => {
     expect(bare.NOISE_SUPPRESSION).toBeUndefined();
   });
 
+  it("passes the hardware mixer levels the image asserts on every start", () => {
+    const env = buildLocalSatelliteEnv(
+      inputs({ sndMixerVolume: 100, micMixerVolume: 65 }),
+    );
+    expect(env.SND_MIXER_VOLUME).toBe("100");
+    expect(env.MIC_MIXER_VOLUME).toBe("65");
+  });
+
+  it("sends 0 rather than omitting it (0% is a level, not 'unset')", () => {
+    const env = buildLocalSatelliteEnv(
+      inputs({ sndMixerVolume: 0, micMixerVolume: 0 }),
+    );
+    expect(env.SND_MIXER_VOLUME).toBe("0");
+    expect(env.MIC_MIXER_VOLUME).toBe("0");
+  });
+
+  it("omits the mixer levels only when they are genuinely undefined", () => {
+    const env = buildLocalSatelliteEnv(
+      inputs({ sndMixerVolume: undefined, micMixerVolume: undefined }),
+    );
+    expect(env.SND_MIXER_VOLUME).toBeUndefined();
+    expect(env.MIC_MIXER_VOLUME).toBeUndefined();
+  });
+
+  it("mixer level changes are env drift, so the container is recreated", () => {
+    // needsRestart() keys off the env block; a slider move must reach the
+    // container rather than sit in config until the next unrelated restart.
+    const before = buildLocalSatelliteEnv(inputs({ sndMixerVolume: 100 }));
+    const after = buildLocalSatelliteEnv(inputs({ sndMixerVolume: 40 }));
+    expect(JSON.stringify(before)).not.toBe(JSON.stringify(after));
+  });
+
   it("disables feedback WAVs when feedbackSounds is false", () => {
     const env = buildLocalSatelliteEnv(inputs({ feedbackSounds: false }));
     expect(env.AWAKE_WAV).toBe("none");

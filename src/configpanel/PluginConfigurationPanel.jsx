@@ -60,6 +60,8 @@ const DEFAULT_LOCAL_SATELLITE = {
   audioMode: "alsa",
   feedbackSounds: true,
   hostPulseSocket: "/run/user/1000/pulse/native",
+  sndMixerVolume: 100,
+  micMixerVolume: 100,
   tag: "auto",
 };
 
@@ -216,6 +218,39 @@ function WakeWordsEditor({ value, onChange, knownWords }) {
   );
 }
 
+/**
+ * 0-100 hardware mixer slider with a live readout. Always has a value —
+ * these levels are asserted on the card rather than left to whatever the
+ * host's ALSA state happens to be, so there is no "unset".
+ */
+function VolumeSlider({ label, hint, value, onChange }) {
+  return (
+    <FieldRow label={label} hint={hint}>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={1}
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          style={{ width: 200 }}
+        />
+        <span
+          style={{
+            fontSize: 13,
+            minWidth: 42,
+            textAlign: "right",
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {value}%
+        </span>
+      </span>
+    </FieldRow>
+  );
+}
+
 /** Border-boxed editor card for one remote satellite. */
 function SatelliteEditor({ sat, live, knownWords, onChange, onRemove }) {
   const set = (patch) => onChange({ ...sat, ...patch });
@@ -365,6 +400,14 @@ export default function PluginConfigurationPanel({ configuration, save }) {
       cfgLocal.hostPulseSocket !== ""
         ? cfgLocal.hostPulseSocket
         : DEFAULT_LOCAL_SATELLITE.hostPulseSocket,
+    sndMixerVolume:
+      typeof cfgLocal.sndMixerVolume === "number"
+        ? cfgLocal.sndMixerVolume
+        : DEFAULT_LOCAL_SATELLITE.sndMixerVolume,
+    micMixerVolume:
+      typeof cfgLocal.micMixerVolume === "number"
+        ? cfgLocal.micMixerVolume
+        : DEFAULT_LOCAL_SATELLITE.micMixerVolume,
     noiseSuppression:
       typeof cfgLocal.noiseSuppression === "number"
         ? String(cfgLocal.noiseSuppression)
@@ -550,6 +593,8 @@ export default function PluginConfigurationPanel({ configuration, save }) {
       feedbackSounds: local.feedbackSounds,
       hostPulseSocket:
         local.hostPulseSocket.trim() || DEFAULT_LOCAL_SATELLITE.hostPulseSocket,
+      sndMixerVolume: local.sndMixerVolume,
+      micMixerVolume: local.micMixerVolume,
       tag: local.tag,
     };
     // Cleared optional numbers are omitted, not sent as empty strings —
@@ -703,6 +748,22 @@ export default function PluginConfigurationPanel({ configuration, save }) {
               knownWords={knownWakeWords}
             />
           </FieldRow>
+          <VolumeSlider
+            label="Speaker volume"
+            hint="hardware level, re-applied every time the satellite starts — ALSA does not keep it on its own"
+            value={local.sndMixerVolume}
+            onChange={(sndMixerVolume) =>
+              setLocal({ ...local, sndMixerVolume })
+            }
+          />
+          <VolumeSlider
+            label="Microphone volume"
+            hint="hardware capture gain; lower it if the mic clips"
+            value={local.micMixerVolume}
+            onChange={(micMixerVolume) =>
+              setLocal({ ...local, micMixerVolume })
+            }
+          />
           <FieldRow
             label="Audio mode"
             hint={
