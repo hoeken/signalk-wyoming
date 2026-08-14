@@ -562,4 +562,50 @@ describe("local satellite lifecycle", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(fake.starts.length).toBe(2);
   });
+
+  it("warns loudly when the local mic has no wake words to trigger on", () => {
+    const h = makeApp();
+    const fake = makeFakeLocal();
+    const p = construct(h.app, fake.overrides);
+    p.start({
+      localSatellite: {
+        enabled: true,
+        micDevice: "plughw:CARD=USB,DEV=0",
+        wakeWords: [],
+      },
+    });
+    // Without this the satellite connects, plays audio and silently discards
+    // every mic chunk — indistinguishable from broken hardware.
+    expect(p.statusMessage()).toContain("WARNING");
+    expect(p.statusMessage()).toContain("no wake words");
+    expect(
+      h.calls.some(
+        (c) => c.startsWith("error:") && c.includes("no wake words"),
+      ),
+    ).toBe(true);
+  });
+
+  it("no mic warning for an announce-only local satellite", () => {
+    const h = makeApp();
+    const fake = makeFakeLocal();
+    const p = construct(h.app, fake.overrides);
+    p.start({
+      localSatellite: { enabled: true, micDevice: "none", wakeWords: [] },
+    });
+    expect(p.statusMessage()).not.toContain("WARNING");
+  });
+
+  it("no mic warning once a wake word is configured", () => {
+    const h = makeApp();
+    const fake = makeFakeLocal();
+    const p = construct(h.app, fake.overrides);
+    p.start({
+      localSatellite: {
+        enabled: true,
+        micDevice: "plughw:CARD=USB,DEV=0",
+        wakeWords: ["okay_nabu"],
+      },
+    });
+    expect(p.statusMessage()).not.toContain("no wake words");
+  });
 });

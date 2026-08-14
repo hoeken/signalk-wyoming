@@ -445,7 +445,10 @@ export function buildSchema(): Record<string, unknown> {
           wakeWords: {
             type: "array",
             title: "Wake words",
-            description: "openWakeWord model names (e.g. okay_nabu)",
+            description:
+              "openWakeWord model names (e.g. okay_nabu). Required for voice " +
+              "commands: with none set, the microphone is ignored entirely " +
+              "and this satellite only speaks announcements",
             items: { type: "string" },
             default: [],
           },

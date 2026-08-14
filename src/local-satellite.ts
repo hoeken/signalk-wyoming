@@ -95,6 +95,41 @@ export function buildLocalSatelliteEnv(
   return env;
 }
 
+/**
+ * Warning for a local satellite that has a microphone but no wake words
+ * (null when there is nothing to warn about).
+ *
+ * This combination is silent by construction and the hardest failure in the
+ * plugin to diagnose from the outside: with no wake words the container is
+ * started without WAKE_URI (no local detection) *and* RemoteSatellite arms it
+ * with `pause-satellite`, so upstream drops every mic chunk. Nothing errors —
+ * the satellite connects, reports healthy, plays announcements fine, and the
+ * microphone simply never does anything. `micDevice: 'none'` is the explicit
+ * way to ask for announce-only, so it warns for every other device value.
+ *
+ * `offeredWakeWords` are the names the boat's wake service advertises; they
+ * go in the message so the fix does not need a second lookup.
+ */
+export function micWithoutWakeWordsWarning(
+  local: LocalSatelliteConfig,
+  offeredWakeWords: string[] = [],
+): string | null {
+  if (!local.enabled) return null;
+  if (local.micDevice.toLowerCase() === "none") return null;
+  if (local.wakeWords.length > 0) return null;
+  const offered =
+    offeredWakeWords.length > 0
+      ? ` (this boat's wake service offers: ${offeredWakeWords.join(", ")})`
+      : "";
+  return (
+    `local satellite microphone is configured (${local.micDevice}) but no ` +
+    `wake words are selected, so it runs announce-only and discards all mic ` +
+    `audio — voice commands cannot work. Pick a wake word for the local ` +
+    `satellite in the plugin settings${offered}, or set its microphone to ` +
+    `"none" if announcements are all you want.`
+  );
+}
+
 /** Full ContainerConfig for a tag (pure — unit-tested directly). */
 export function buildLocalSatelliteConfig(
   tag: string,

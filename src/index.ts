@@ -30,6 +30,7 @@ import { EnergyGateEndpointer } from "./endpointer.js";
 import { EventHub } from "./events.js";
 import {
   createLocalSatellite,
+  micWithoutWakeWordsWarning,
   type LocalSatelliteDeps,
   type LocalSatelliteHandle,
 } from "./local-satellite.js";
@@ -83,6 +84,14 @@ interface Runtime {
   muted: boolean;
   /** Wake-words-without-wake-service warning (spec §4.3 degraded mode). */
   wakeWarning: string | null;
+  /**
+   * Microphone-without-wake-words warning — the inverse of `wakeWarning`,
+   * and the quieter failure of the two: a satellite with no wake words is
+   * armed with `pause-satellite`, so it drops every mic chunk. A perfectly
+   * wired microphone then produces nothing at all, and nothing anywhere says
+   * why. See {@link updateMicWarning}.
+   */
+  micWarning: string | null;
 }
 
 /** Test seam only — Signal K calls plugin(app) with no second argument. */
@@ -109,6 +118,7 @@ export default function plugin(
     localStart: null,
     muted: false,
     wakeWarning: null,
+    micWarning: null,
   };
 
   // Stable across restarts: a stale handle held by another plugin fails
@@ -233,9 +243,12 @@ export default function plugin(
       .map((t) => `${t}: ${services?.[t]?.status ?? "—"}`)
       .join(", ");
     const base = `${connected}/${total} satellites connected; ${svc}`;
-    return runtime.wakeWarning === null
+    const warnings = [runtime.wakeWarning, runtime.micWarning].filter(
+      (w): w is string => w !== null,
+    );
+    return warnings.length === 0
       ? base
-      : `${base} — WARNING: ${runtime.wakeWarning}`;
+      : `${base} — WARNING: ${warnings.join("; ")}`;
   };
 
   /**
@@ -264,6 +277,24 @@ export default function plugin(
         "wake service available",
       );
     }
+  };
+
+  /**
+   * The mirror image of updateWakeWarning: a microphone configured with no
+   * wake words to trigger on. Logged once (not per re-evaluation) and folded
+   * into the plugin status, because the runtime symptom — a satellite that
+   * connects, plays audio and never hears anything — looks like broken
+   * hardware rather than a missing setting.
+   */
+  const updateMicWarning = (): void => {
+    if (!runtime.running || runtime.config === null) return;
+    const warning = micWithoutWakeWordsWarning(
+      runtime.config.localSatellite,
+      runtime.directory?.get("wake")?.wakeWords ?? [],
+    );
+    if (warning === runtime.micWarning) return;
+    runtime.micWarning = warning;
+    if (warning !== null) app.error(warning);
   };
 
   return {
@@ -312,6 +343,7 @@ export default function plugin(
       runtime.running = true;
       runtime.muted = false; // not persisted across restarts (D14)
       runtime.wakeWarning = null;
+      runtime.micWarning = null;
       runtime.hub = new EventHub();
 
       // Satellites that expect a wake service (spec §4.3 degraded mode).
@@ -460,6 +492,9 @@ export default function plugin(
         runtime.hub?.emit("service", { type, service: resolved });
         if (type === "wake") {
           updateWakeWarning(wakeSatelliteIds());
+          // Re-run: the wake service appearing is what supplies the list of
+          // wake words the message suggests picking from.
+          updateMicWarning();
           rewireLocalWake();
           rewireInheritedWakeWords();
         }
@@ -539,6 +574,7 @@ export default function plugin(
         makeSatellite(entry);
       }
       updateWakeWarning(wakeSatelliteIds());
+      updateMicWarning();
 
       // --- local satellite container (async; startSafely reports failures) ---
       if (config.localSatellite.enabled) {

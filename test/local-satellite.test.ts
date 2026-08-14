@@ -9,6 +9,7 @@ import {
   fetchSatelliteVersions,
   LOCAL_SATELLITE_FLOATING_TAG,
   LOCAL_SATELLITE_IMAGE,
+  micWithoutWakeWordsWarning,
   SATELLITE_TAGS_URL,
   type LocalSatelliteBuildInputs,
 } from "../src/local-satellite.js";
@@ -114,6 +115,58 @@ describe("buildLocalSatelliteEnv", () => {
   it("sets PULSE_SERVER in pulse-socket mode", () => {
     const env = buildLocalSatelliteEnv(inputs({ audioMode: "pulse-socket" }));
     expect(env.PULSE_SERVER).toBe("unix:///run/pulse-socket");
+  });
+});
+
+describe("micWithoutWakeWordsWarning", () => {
+  const local = (
+    overrides: Partial<LocalSatelliteBuildInputs["local"]> = {},
+  ) => ({ ...DEFAULT_LOCAL_SATELLITE, ...overrides });
+
+  it("warns when a mic is configured with no wake words", () => {
+    const warning = micWithoutWakeWordsWarning(
+      local({ enabled: true, micDevice: "plughw:CARD=USB,DEV=0" }),
+    );
+    expect(warning).not.toBeNull();
+    expect(warning).toContain("plughw:CARD=USB,DEV=0");
+    expect(warning).toContain("no wake words");
+  });
+
+  it("names the wake words the boat's wake service offers", () => {
+    const warning = micWithoutWakeWordsWarning(
+      local({ enabled: true, micDevice: "plughw:CARD=USB,DEV=0" }),
+      ["okay_nabu", "hey_jarvis"],
+    );
+    expect(warning).toContain("okay_nabu, hey_jarvis");
+  });
+
+  it("warns for 'auto' too — auto resolves to a real capture device", () => {
+    expect(micWithoutWakeWordsWarning(local({ enabled: true }))).not.toBeNull();
+  });
+
+  it("stays quiet when wake words are configured", () => {
+    expect(
+      micWithoutWakeWordsWarning(
+        local({ enabled: true, wakeWords: ["okay_nabu"] }),
+      ),
+    ).toBeNull();
+  });
+
+  it("stays quiet for a deliberately announce-only satellite", () => {
+    expect(
+      micWithoutWakeWordsWarning(local({ enabled: true, micDevice: "none" })),
+    ).toBeNull();
+    expect(
+      micWithoutWakeWordsWarning(local({ enabled: true, micDevice: "NONE" })),
+    ).toBeNull();
+  });
+
+  it("stays quiet when the local satellite is disabled", () => {
+    expect(
+      micWithoutWakeWordsWarning(
+        local({ enabled: false, micDevice: "plughw:CARD=USB,DEV=0" }),
+      ),
+    ).toBeNull();
   });
 });
 

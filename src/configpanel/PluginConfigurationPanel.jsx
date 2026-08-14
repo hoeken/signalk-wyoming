@@ -693,7 +693,10 @@ export default function PluginConfigurationPanel({ configuration, save }) {
               placeholder="auto"
             />
           </FieldRow>
-          <FieldRow label="Wake words" hint="openWakeWord model names">
+          <FieldRow
+            label="Wake words"
+            hint="required for voice commands — with none ticked the microphone is ignored and this satellite only speaks"
+          >
             <WakeWordsEditor
               value={local.wakeWords}
               onChange={(wakeWords) => setLocal({ ...local, wakeWords })}
