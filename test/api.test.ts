@@ -270,12 +270,12 @@ describe("GET /api/versions", () => {
 });
 
 describe("POST /api/say", () => {
-  it("202 + result on success", async () => {
+  it("200 + result on success", async () => {
     const { router, routes } = makeRouter();
     const h = makeDeps();
     registerApiRoutes(router, h.deps);
     const res = await call(routes, "post /api/say", { body: { text: "hi" } });
-    expect(res.statusCode).toBe(202);
+    expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ ok: true, queued: ["a"] });
     expect(h.deps.say).toHaveBeenCalledWith({ text: "hi" });
   });
@@ -455,7 +455,7 @@ describe("status endpoints", () => {
 });
 
 describe("POST /api/satellites/:id/test", () => {
-  it("404 unknown id, 503 disconnected, 202 + tone enqueued", async () => {
+  it("404 unknown id, 503 disconnected, 200 + tone enqueued", async () => {
     const { router, routes } = makeRouter();
     const h = makeDeps();
     const enqueued: {
@@ -489,7 +489,7 @@ describe("POST /api/satellites/:id/test", () => {
     const res = await call(routes, "post /api/satellites/:id/test", {
       params: { id: "a" },
     });
-    expect(res.statusCode).toBe(202);
+    expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ ok: true, queued: ["a"] });
     expect(enqueued).toHaveLength(1);
     expect(enqueued[0]?.priority).toBe("normal");

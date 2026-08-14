@@ -230,7 +230,7 @@ describe("orchestration end-to-end (mock tts + mock satellite)", () => {
     const sayRoute = routes.get("post /api/say");
     expect(sayRoute).toBeDefined();
     await sayRoute?.({ body: { text: "anchor alarm" } }, res);
-    expect(res.statusCode).toBe(202);
+    expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ ok: true, queued: ["cockpit"] });
     const synth = tts.log.find((e) => e.event.type === "synthesize");
     expect(synth?.event.data?.text).toBe("anchor alarm");
@@ -276,7 +276,7 @@ describe("orchestration end-to-end (mock tts + mock satellite)", () => {
       "hello boat",
       () => {},
     );
-    expect(result).toEqual({ state: "COMPLETED", statusCode: 202 });
+    expect(result).toEqual({ state: "COMPLETED", statusCode: 200 });
     await sat.waitForEvent((e) => e.event.type === "audio-stop", {
       timeoutMs: 5000,
     });
@@ -391,7 +391,7 @@ describe("orchestration end-to-end (mock tts + mock satellite)", () => {
 
     const after = makeRes();
     await routes.get("post /api/say")?.({ body: { text: "hi" } }, after);
-    expect(after.statusCode).toBe(202);
+    expect(after.statusCode).toBe(200);
   });
 
   it("degrades without optional app APIs (CI lifecycle harness)", async () => {

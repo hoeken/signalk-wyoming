@@ -234,11 +234,11 @@ describe("voice.muted PUT", () => {
 });
 
 describe("voice.say PUT", () => {
-  it("maps a string value to say({text}) and answers 202", async () => {
+  it("maps a string value to say({text}) and answers 200", async () => {
     const h = makeHarness();
     h.publisher.start();
     const r = (await h.put("voice.say", "anchor alarm")) as ActionResult;
-    expect(r).toEqual({ state: "COMPLETED", statusCode: 202 });
+    expect(r).toEqual({ state: "COMPLETED", statusCode: 200 });
     expect(h.say).toHaveBeenCalledWith({ text: "anchor alarm" });
   });
 

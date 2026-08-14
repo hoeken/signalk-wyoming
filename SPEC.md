@@ -240,7 +240,7 @@ Semantics (shared by all three surfaces):
 - `wait: true` (resolve on playback completion, for node-red sequencing) is reserved for v1.x — the field is honored-or-rejected, never silently ignored. In v1 it rejects with `{ ok: false, error: "wait:true is not supported in v1; poll voice.satellites.<id>.state" }`.
 
 1. **REST** (respects SignalK write auth):
-   - `POST /plugins/signalk-wyoming/api/say` — body is `opts`; 202 + result when ≥1 target queued, 503 when none
+   - `POST /plugins/signalk-wyoming/api/say` — body is `opts`; 200 + result when ≥1 target queued, 503 when none
    - `GET /plugins/signalk-wyoming/api/satellites` — status list
    - `GET /plugins/signalk-wyoming/api/services` — discovered services + health
    - `POST /plugins/signalk-wyoming/api/satellites/:id/test` — play test tone

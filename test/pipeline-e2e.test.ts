@@ -324,7 +324,7 @@ describe("full pipeline e2e (mock satellite + asr)", () => {
       { body: { text: "abandon ship", priority: "urgent" } },
       res,
     );
-    expect(res.statusCode).toBe(202);
+    expect(res.statusCode).toBe(200);
     expect(res.body).toMatchObject({ ok: true, queued: ["s1"] });
 
     // Pipeline aborted silently...
@@ -383,7 +383,7 @@ describe("full pipeline e2e (mock satellite + asr)", () => {
       { body: { text: "a long normal announcement" } },
       res,
     );
-    expect(res.statusCode).toBe(202);
+    expect(res.statusCode).toBe(200);
     await until(() =>
       h.pathValues("voice.satellites.s1.state").includes("speaking"),
     );

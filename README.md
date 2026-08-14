@@ -194,11 +194,11 @@ admin-only).
 
 | Method & path                                      | Body / result                                                                                                            |
 | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `POST /api/say`                                    | `{text, targets?, voice?, priority?}` → `202` `{ok, queued, errors?, suppressed?}`; `503` when nothing could be queued   |
+| `POST /api/say`                                    | `{text, targets?, voice?, priority?}` → `200` `{ok, queued, errors?, suppressed?}`; `503` when nothing could be queued   |
 | `GET /api/satellites`                              | `[{id, name, connected, state, host, port, hasControlApi, queueDepth}]`                                                  |
 | `GET /api/services`                                | `{asr, tts, wake}` → each `{uri, status, source, plugin?}`; `wake` gains `models` (available wake-word names) when ready |
 | `GET /api/voices`                                  | piper voices `[{name, languages, description}]`; `503` until TTS is available                                            |
-| `POST /api/satellites/:id/test`                    | queue a test tone → `202`                                                                                                |
+| `POST /api/satellites/:id/test`                    | queue a test tone → `200`                                                                                                |
 | `GET /api/satellites/:id/devices`                  | audio devices `{capture: [{card, device, id, name}], playback: [...]}` (`404` if the satellite has no control API)       |
 | `POST /api/satellites/:id/record`                  | `{seconds?}` (1–10) → `audio/wav` (briefly pauses the satellite)                                                         |
 | `POST /api/satellites/:id/play`                    | `{type: 'tone', frequency?, durationMs?}` or `{type: 'wav', data: base64}`                                               |

@@ -204,7 +204,7 @@ export class SignalKPublisher {
 
   /**
    * voice.say PUT: string value → say({text}); object → say(opts). Returns
-   * the promise of an ActionResult (put.ts awaits promise returns): 202 once
+   * the promise of an ActionResult (put.ts awaits promise returns): 200 once
    * enqueued, 503 when nothing could be queued.
    */
   private handleSayPut(value: unknown): ActionResult | Promise<ActionResult> {
@@ -223,7 +223,7 @@ export class SignalKPublisher {
     return this.deps.say(opts).then(
       (result): ActionResult => {
         this.deps.onSayResult?.(result);
-        return { state: "COMPLETED", statusCode: 202 };
+        return { state: "COMPLETED", statusCode: 200 };
       },
       (err): ActionResult => {
         const message = err instanceof Error ? err.message : String(err);

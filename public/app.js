@@ -88,7 +88,7 @@ export async function apiGet(path) {
   return (await request(path)).json();
 }
 
-/** POST JSON returning parsed JSON (also used for 202 results). */
+/** POST JSON returning parsed JSON. */
 export async function apiPost(path, body) {
   const response = await request(path, {
     method: "POST",

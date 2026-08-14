@@ -228,7 +228,7 @@ export function registerApiRoutes(router: ApiRouter, deps: ApiDeps): void {
           : {};
       try {
         const result = await deps.say(body);
-        res.status(202).json(result);
+        res.status(200).json(result);
       } catch (err) {
         res.status(503).json({
           ok: false,
@@ -358,7 +358,7 @@ export function registerApiRoutes(router: ApiRouter, deps: ApiDeps): void {
         text: item.text,
         priority: item.priority,
       });
-      res.status(202).json({ ok: true, queued: [entry.satellite.id] });
+      res.status(200).json({ ok: true, queued: [entry.satellite.id] });
     }),
   );
 
