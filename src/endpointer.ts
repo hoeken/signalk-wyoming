@@ -55,6 +55,16 @@ export const SPEECH_ABS_MIN_RMS = 700;
 export const FLOOR_SEED_CHUNKS = 3;
 
 /**
+ * A floor is only believable while the loudest audio in the utterance stands
+ * clear of it. If the peak never reaches `floor × SPEECH_FLOOR_FACTOR`, the
+ * floor was seeded from speech (the wake path opens the stream mid-word), so
+ * the gate falls back to `SPEECH_ABS_MIN_RMS` rather than a threshold nothing
+ * can cross. Genuinely loud ambient — engine room — keeps its adaptive floor,
+ * because there the speech peak does clear it.
+ */
+export const FLOOR_TRUST_PEAK_FACTOR = SPEECH_FLOOR_FACTOR;
+
+/**
  * After seeding, the floor follows non-speech chunks with a slow EWMA so a
  * drifting ambient level (engine rpm changes) is tracked without letting
  * speech inflate the floor.
@@ -81,6 +91,7 @@ export class EnergyGateEndpointer implements Endpointer {
   private silenceRunMs = 0;
   private speechSeen = false;
   private floor: number | null = null;
+  private peakRms = 0;
   private seedCount = 0;
   private ended = false;
 
@@ -99,7 +110,20 @@ export class EnergyGateEndpointer implements Endpointer {
       this.floor = this.floor === null ? rms : Math.min(this.floor, rms);
       this.seedCount++;
     }
-    const floor = this.floor ?? 0;
+    // The seed is only ambient if the user was not ALREADY talking when the
+    // stream opened. On the wake path they usually are — the satellite starts
+    // streaming at the wake word — so the floor can seed at speech level, and
+    // floor*FLOOR_FACTOR then exceeds anything the same voice produces:
+    // speechSeen never flips and the utterance runs to maxUtteranceMs.
+    // Measured on an ESP32-P4 satellite: floor=1086, threshold=3259, speech
+    // 887 RMS, ten seconds scored as unbroken silence.
+    //
+    // So trust the floor only while the loudest chunk seen stands clear of it;
+    // a floor seeded from speech never does, and the gate falls back to the
+    // absolute threshold instead of locking itself shut.
+    if (rms > this.peakRms) this.peakRms = rms;
+    const seeded = this.floor ?? 0;
+    const floor = this.peakRms >= seeded * FLOOR_TRUST_PEAK_FACTOR ? seeded : 0;
     const threshold = Math.max(floor * SPEECH_FLOOR_FACTOR, SPEECH_ABS_MIN_RMS);
 
     if (rms >= threshold) {
@@ -107,8 +131,13 @@ export class EnergyGateEndpointer implements Endpointer {
       this.silenceRunMs = 0;
     } else {
       this.silenceRunMs += chunkMs;
+      // Track ambient DOWNWARD freely, but never let a run of sub-threshold
+      // chunks drag the floor UP toward speech: a mis-seeded floor must be
+      // able to recover, not compound. (Rising ambient is picked up on the
+      // next utterance, which reseeds.)
       if (this.seedCount >= FLOOR_SEED_CHUNKS) {
-        this.floor = floor + FLOOR_EWMA_ALPHA * (rms - floor);
+        const next = floor + FLOOR_EWMA_ALPHA * (rms - floor);
+        this.floor = Math.min(next, floor);
       }
     }
 
@@ -133,6 +162,7 @@ export class EnergyGateEndpointer implements Endpointer {
     this.silenceRunMs = 0;
     this.speechSeen = false;
     this.floor = null;
+    this.peakRms = 0;
     this.seedCount = 0;
     this.ended = false;
   }
