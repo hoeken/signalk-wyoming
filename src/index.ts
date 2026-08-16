@@ -555,6 +555,7 @@ export default function plugin(
         emit: (kind, data) => runtime.hub?.emit(kind, data),
         endpointerFactory: () =>
           new EnergyGateEndpointer({
+            speechMinRms: config.advanced.speechMinRms,
             silenceMs: config.advanced.silenceMs,
             maxUtteranceMs: config.advanced.maxUtteranceMs,
             minUtteranceMs: config.advanced.minUtteranceMs,

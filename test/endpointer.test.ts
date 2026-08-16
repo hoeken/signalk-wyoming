@@ -6,7 +6,14 @@ import {
   type Endpointer,
 } from "../src/endpointer.js";
 import type { AudioFormat } from "../src/protocol/events.js";
-import { ambientChunk, silencePcm, sinePcm, speechChunk } from "./pcm.js";
+import {
+  ambientChunk,
+  farFieldSpeechChunk,
+  quietSpeechChunk,
+  silencePcm,
+  sinePcm,
+  speechChunk,
+} from "./pcm.js";
 
 // 1024 samples @ 16 kHz / 16-bit / mono = 64 ms per chunk.
 const FMT: AudioFormat = { rate: 16000, width: 2, channels: 1 };
@@ -230,5 +237,77 @@ describe("EnergyGateEndpointer — audio-time bookkeeping", () => {
       "continue",
       "end",
     ]);
+  });
+});
+
+describe("EnergyGateEndpointer — floor seeding when speech starts immediately", () => {
+  const opts = { silenceMs: 1500, minUtteranceMs: 300, maxUtteranceMs: 10000 };
+
+  // On the wake path the satellite starts streaming at the wake word, so the
+  // first chunks are the user already talking, not ambient. Seeding the floor
+  // from them puts it AT speech level; the 3x factor then makes a threshold
+  // no speech can reach, speechSeen stays false and every utterance runs to
+  // maxUtteranceMs. Measured on hardware: floor=1086 thr=3259 rms=887.
+  it("detects speech even when the first chunks are already speech", () => {
+    const ep = new EnergyGateEndpointer(opts);
+    // No ambient lead-in at all — speech from the very first chunk.
+    const speech = Array.from({ length: 20 }, () => quietSpeechChunk());
+    const trailing = Array.from({ length: 30 }, () => ambientChunk());
+    const results = feedAll(ep, [...speech, ...trailing]);
+    // Must end on the silence gate, well before the 10 s cap (156 chunks).
+    expect(results).toContain("end");
+    expect(results.indexOf("end")).toBeLessThan(
+      speech.length + trailing.length,
+    );
+  });
+
+  it("does not let a silence run inflate the floor past speech", () => {
+    const ep = new EnergyGateEndpointer(opts);
+    // Speech first (mis-seeds the floor), then more speech: the EWMA must not
+    // have climbed so far that later speech is still scored as silence.
+    feedAll(
+      ep,
+      Array.from({ length: 10 }, () => quietSpeechChunk()),
+    );
+    const later = feedAll(
+      ep,
+      Array.from({ length: 24 }, () => ambientChunk()),
+    );
+    expect(later).toContain("end");
+  });
+});
+
+describe("EnergyGateEndpointer — speechMinRms", () => {
+  const base = { silenceMs: 200, minUtteranceMs: 100, maxUtteranceMs: 10000 };
+
+  // A far-field panel mic never reaches the 700 default: measured on hardware
+  // a deliberately loud question peaked at 612, so speechSeen never flipped
+  // and the utterance ran to maxUtteranceMs with a truncated transcript.
+  it("never sees speech from a far-field mic at the default threshold", () => {
+    const ep = new EnergyGateEndpointer(base);
+    feedAll(
+      ep,
+      Array.from({ length: 8 }, () => farFieldSpeechChunk()),
+    );
+    // Silence after speech only ends the utterance if speech was SEEN; with
+    // the default threshold it never was, so this runs on to the cap.
+    const tail = feedAll(
+      ep,
+      Array.from({ length: 8 }, () => ambientChunk()),
+    );
+    expect(tail).not.toContain("end");
+  });
+
+  it("ends normally once the threshold suits the mic", () => {
+    const ep = new EnergyGateEndpointer({ ...base, speechMinRms: 300 });
+    feedAll(
+      ep,
+      Array.from({ length: 8 }, () => farFieldSpeechChunk()),
+    );
+    const tail = feedAll(
+      ep,
+      Array.from({ length: 8 }, () => ambientChunk()),
+    );
+    expect(tail).toContain("end");
   });
 });
