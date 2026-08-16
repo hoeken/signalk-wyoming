@@ -299,3 +299,13 @@ describe("schema and local satellite entry", () => {
     expect(ui.advanced?.["ui:field"]).toBe("collapsible");
   });
 });
+
+describe("speechMinRms default", () => {
+  it("matches the endpointer's absolute threshold", async () => {
+    // config.ts duplicates the value rather than importing it: the import
+    // creates a config -> endpointer -> index cycle that breaks the plugin at
+    // load time. This test is what keeps the copy honest.
+    const { SPEECH_ABS_MIN_RMS } = await import("../src/endpointer.js");
+    expect(DEFAULT_ADVANCED.speechMinRms).toBe(SPEECH_ABS_MIN_RMS);
+  });
+});

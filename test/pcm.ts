@@ -70,3 +70,12 @@ export function buildWav(
 export function quietSpeechChunk(samples = 1024): Buffer {
   return sinePcm(samples, 1250, 300);
 }
+
+/**
+ * Far-field panel speech as measured on an ESP32-P4 satellite: a question
+ * spoken deliberately loudly peaked at RMS 612, well under the 700 default
+ * absolute threshold.
+ */
+export function farFieldSpeechChunk(samples = 1024): Buffer {
+  return sinePcm(samples, 850, 300);
+}

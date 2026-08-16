@@ -8,6 +8,7 @@ import {
 import type { AudioFormat } from "../src/protocol/events.js";
 import {
   ambientChunk,
+  farFieldSpeechChunk,
   quietSpeechChunk,
   silencePcm,
   sinePcm,
@@ -273,5 +274,40 @@ describe("EnergyGateEndpointer — floor seeding when speech starts immediately"
       Array.from({ length: 24 }, () => ambientChunk()),
     );
     expect(later).toContain("end");
+  });
+});
+
+describe("EnergyGateEndpointer — speechMinRms", () => {
+  const base = { silenceMs: 200, minUtteranceMs: 100, maxUtteranceMs: 10000 };
+
+  // A far-field panel mic never reaches the 700 default: measured on hardware
+  // a deliberately loud question peaked at 612, so speechSeen never flipped
+  // and the utterance ran to maxUtteranceMs with a truncated transcript.
+  it("never sees speech from a far-field mic at the default threshold", () => {
+    const ep = new EnergyGateEndpointer(base);
+    feedAll(
+      ep,
+      Array.from({ length: 8 }, () => farFieldSpeechChunk()),
+    );
+    // Silence after speech only ends the utterance if speech was SEEN; with
+    // the default threshold it never was, so this runs on to the cap.
+    const tail = feedAll(
+      ep,
+      Array.from({ length: 8 }, () => ambientChunk()),
+    );
+    expect(tail).not.toContain("end");
+  });
+
+  it("ends normally once the threshold suits the mic", () => {
+    const ep = new EnergyGateEndpointer({ ...base, speechMinRms: 300 });
+    feedAll(
+      ep,
+      Array.from({ length: 8 }, () => farFieldSpeechChunk()),
+    );
+    const tail = feedAll(
+      ep,
+      Array.from({ length: 8 }, () => ambientChunk()),
+    );
+    expect(tail).toContain("end");
   });
 });

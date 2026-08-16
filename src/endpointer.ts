@@ -31,6 +31,13 @@ export interface EnergyGateOptions {
   maxUtteranceMs?: number;
   /** Never end on silence before this much audio has elapsed. */
   minUtteranceMs?: number;
+  /**
+   * Absolute RMS floor for "this chunk is speech", overriding
+   * `SPEECH_ABS_MIN_RMS`. Measured on an ESP32-P4 panel mic: a question
+   * spoken deliberately loudly peaked at 612, so at the 700 default nothing
+   * the talker said ever registered and every utterance ran to the cap.
+   */
+  speechMinRms?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +93,7 @@ export class EnergyGateEndpointer implements Endpointer {
   private readonly silenceMs: number;
   private readonly maxUtteranceMs: number;
   private readonly minUtteranceMs: number;
+  private readonly speechMinRms: number;
 
   private elapsedMs = 0;
   private silenceRunMs = 0;
@@ -99,6 +107,7 @@ export class EnergyGateEndpointer implements Endpointer {
     this.silenceMs = opts.silenceMs ?? 800;
     this.maxUtteranceMs = opts.maxUtteranceMs ?? 10000;
     this.minUtteranceMs = opts.minUtteranceMs ?? 300;
+    this.speechMinRms = opts.speechMinRms ?? SPEECH_ABS_MIN_RMS;
   }
 
   feed(chunk: Buffer, format: AudioFormat): "continue" | "end" {
@@ -124,7 +133,7 @@ export class EnergyGateEndpointer implements Endpointer {
     if (rms > this.peakRms) this.peakRms = rms;
     const seeded = this.floor ?? 0;
     const floor = this.peakRms >= seeded * FLOOR_TRUST_PEAK_FACTOR ? seeded : 0;
-    const threshold = Math.max(floor * SPEECH_FLOOR_FACTOR, SPEECH_ABS_MIN_RMS);
+    const threshold = Math.max(floor * SPEECH_FLOOR_FACTOR, this.speechMinRms);
 
     if (rms >= threshold) {
       this.speechSeen = true;

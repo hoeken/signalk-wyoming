@@ -91,6 +91,13 @@ export interface DefaultsConfig {
 }
 
 export interface AdvancedConfig {
+  /**
+   * Absolute RMS a chunk must reach to count as speech, whatever the
+   * adaptive noise floor says. The default suits a close-talking mic; a
+   * far-field panel mic several feet away needs it lower or nothing it
+   * hears ever registers and every utterance runs to maxUtteranceMs.
+   */
+  speechMinRms: number;
   silenceMs: number;
   maxUtteranceMs: number;
   minUtteranceMs: number;
@@ -109,6 +116,11 @@ export interface OrchestratorConfig {
 }
 
 export const DEFAULT_ADVANCED: AdvancedConfig = {
+  // Mirrors SPEECH_ABS_MIN_RMS in endpointer.ts. Deliberately duplicated:
+  // importing it here makes config a dependency of endpointer, and the cycle
+  // through index.ts breaks the plugin at load time ("Unexpected status of a
+  // module that is imported again after being required").
+  speechMinRms: 700,
   silenceMs: 800,
   maxUtteranceMs: 10000,
   minUtteranceMs: 300,
@@ -584,6 +596,19 @@ export function buildSchema(): Record<string, unknown> {
         type: "object",
         title: "Advanced",
         properties: {
+          speechMinRms: {
+            type: "number",
+            title: "Speech threshold (RMS)",
+            description:
+              "Loudness a chunk must reach to count as speech (0-32767). " +
+              "The default suits a close-talking mic; a far-field panel mic " +
+              "may only reach a few hundred, in which case nothing registers " +
+              "as speech and every utterance runs to the maximum length. " +
+              "Lower it if replies arrive only after the cap.",
+            default: DEFAULT_ADVANCED.speechMinRms,
+            minimum: 1,
+            maximum: 32767,
+          },
           silenceMs: {
             type: "number",
             title: "End-of-utterance silence (ms)",
