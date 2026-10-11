@@ -8,7 +8,13 @@
 import { defaultTimers, type TimerApi } from "./types.js";
 
 export type HubEventKind =
-  "state" | "command" | "announcement" | "detection" | "service" | "error";
+  | "state"
+  | "command"
+  | "announcement"
+  | "delivery"
+  | "detection"
+  | "service"
+  | "error";
 
 export interface HubEvent {
   at: number;

@@ -221,10 +221,10 @@ describe("parseConfig services / defaults / advanced / localSatellite", () => {
       parseConfig({
         localSatellite: {
           audioMode: "pulse-socket",
-          hostPulseCookie: "/home/pi/.config/pulse/cookie",
+          hostPulseCookie: "/var/lib/pulse/cookie",
         },
       }).localSatellite.hostPulseCookie,
-    ).toBe("/home/pi/.config/pulse/cookie");
+    ).toBe("/var/lib/pulse/cookie");
   });
 
   it("rejects an unknown audioMode", () => {

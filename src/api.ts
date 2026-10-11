@@ -26,7 +26,11 @@ import type { ServiceDirectory } from "./discovery.js";
 import type { EventHub } from "./events.js";
 import type { AnnouncementQueue } from "./queue.js";
 import type { RemoteSatellite } from "./satellite.js";
-import type { BufferedAudio } from "./types.js";
+import type {
+  AnnouncementRequest,
+  AnnouncementSnapshot,
+} from "./announcements.js";
+import { generateTone, type SoundInfo } from "./sounds.js";
 
 // ---------------------------------------------------------------------------
 // Structural router/req/res types (kept minimal so tests use plain fakes)
@@ -56,6 +60,7 @@ export type ApiHandler = (
 export interface ApiRouter {
   get(path: string, handler: ApiHandler): unknown;
   post(path: string, handler: ApiHandler): unknown;
+  delete?(path: string, handler: ApiHandler): unknown;
   /** Signal K PluginRouter permission registrar (feature-detected). */
   access?(level: "readwrite" | "readonly"): ApiRouter;
 }
@@ -97,6 +102,12 @@ export interface ApiDeps {
     uri: string,
     opts: { language?: string },
   ) => Promise<TranscribeSessionLike>;
+  announce?(request: AnnouncementRequest): Promise<AnnouncementSnapshot>;
+  getAnnouncement?(id: string): AnnouncementSnapshot | undefined;
+  cancelAnnouncement?(id: string): AnnouncementSnapshot | undefined;
+  listSounds?(): SoundInfo[];
+  putSound?(id: string, wavBase64: string): SoundInfo;
+  deleteSound?(id: string): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,27 +118,7 @@ export interface ApiDeps {
  * A square-ish 440 Hz test tone: a soft-clipped sine reads clearly on small
  * boat speakers. 22050 Hz / 16-bit / mono, 1 s, in 2048-byte chunks.
  */
-export function generateTone(
-  opts: { frequencyHz?: number; durationMs?: number } = {},
-): BufferedAudio {
-  const frequencyHz = opts.frequencyHz ?? 440;
-  const durationMs = opts.durationMs ?? 1000;
-  const format = { rate: 22050, width: 2, channels: 1 };
-  const totalSamples = Math.round((format.rate * durationMs) / 1000);
-  const pcm = Buffer.alloc(totalSamples * 2);
-  for (let i = 0; i < totalSamples; i++) {
-    const t = i / format.rate;
-    const sine = Math.sin(2 * Math.PI * frequencyHz * t);
-    // Soft clip toward a square-ish wave, at moderate volume.
-    const sample = Math.tanh(3 * sine) * 0.35;
-    pcm.writeInt16LE(Math.round(sample * 32767), i * 2);
-  }
-  const chunks: Buffer[] = [];
-  for (let off = 0; off < pcm.length; off += 2048) {
-    chunks.push(pcm.subarray(off, Math.min(off + 2048, pcm.length)));
-  }
-  return { format, chunks };
-}
+export { generateTone } from "./sounds.js";
 
 /**
  * The satellite control API validates `seconds` as 1..10 (server.py
@@ -237,6 +228,104 @@ export function registerApiRoutes(router: ApiRouter, deps: ApiDeps): void {
       }
     }),
   );
+
+  // --- durable announcements ---------------------------------------------
+
+  access("readwrite").post(
+    "/api/announcements",
+    guarded(async (req, res) => {
+      if (deps.announce === undefined) {
+        res.status(503).json({ error: "announcement service unavailable" });
+        return;
+      }
+      try {
+        const result = await deps.announce(req.body as AnnouncementRequest);
+        res.status(202).json(result);
+      } catch (error) {
+        res.status(400).json({
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }),
+  );
+
+  access("readonly").get(
+    "/api/announcements/:id",
+    guarded((req, res) => {
+      const result = deps.getAnnouncement?.(req.params?.id ?? "");
+      if (result === undefined) {
+        res.status(404).json({ error: "unknown announcement" });
+        return;
+      }
+      res.status(200).json(result);
+    }),
+  );
+
+  if (typeof router.delete === "function") {
+    access("readwrite").delete?.(
+      "/api/announcements/:id",
+      guarded((req, res) => {
+        const result = deps.cancelAnnouncement?.(req.params?.id ?? "");
+        if (result === undefined) {
+          res.status(404).json({ error: "unknown announcement" });
+          return;
+        }
+        res.status(200).json(result);
+      }),
+    );
+  }
+
+  // --- notification sound library ---------------------------------------
+
+  access("readonly").get(
+    "/api/sounds",
+    guarded((_req, res) => {
+      res.status(200).json(deps.listSounds?.() ?? []);
+    }),
+  );
+
+  access("readwrite").post(
+    "/api/sounds",
+    guarded((req, res) => {
+      const body =
+        req.body !== null && typeof req.body === "object"
+          ? (req.body as Record<string, unknown>)
+          : {};
+      if (typeof body.id !== "string" || typeof body.wavBase64 !== "string") {
+        res.status(400).json({ error: "body must be {id, wavBase64}" });
+        return;
+      }
+      try {
+        if (deps.putSound === undefined)
+          throw new Error("custom sound storage unavailable");
+        res.status(201).json(deps.putSound(body.id, body.wavBase64));
+      } catch (error) {
+        res.status(400).json({
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }),
+  );
+
+  if (typeof router.delete === "function") {
+    access("readwrite").delete?.(
+      "/api/sounds/:id",
+      guarded((req, res) => {
+        try {
+          const deleted = deps.deleteSound?.(req.params?.id ?? "") ?? false;
+          if (!deleted) {
+            res.status(404).json({ error: "unknown sound" });
+            return;
+          }
+          res.status(200).json({ deleted: true });
+        } catch (error) {
+          res.status(400).json({
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }),
+    );
+  }
 
   // --- status -------------------------------------------------------------
 

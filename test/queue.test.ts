@@ -38,7 +38,7 @@ function makePlayer() {
     play: vi.fn((i: AnnouncementItem) => {
       const done = deferred();
       playing.push({ item: i, done });
-      return done.promise;
+      return done.promise.then(() => ({ confirmed: true }));
     }),
     /** Wait until the player has been asked to play `n` items. */
     async until(n: number) {
@@ -175,6 +175,38 @@ describe("AnnouncementQueue barge-in (interruptForPipeline)", () => {
 });
 
 describe("AnnouncementQueue bounds and bookkeeping", () => {
+  it("cancels queued and playing items with lifecycle events", async () => {
+    const player = makePlayer();
+    const events: { type: string; reason?: string; id: string }[] = [];
+    const queue = new AnnouncementQueue({
+      ...player,
+      onEvent: (event) =>
+        events.push({
+          type: event.type,
+          reason: event.reason,
+          id: event.item.id,
+        }),
+    });
+    const current = item("normal", "current");
+    const pending = item("normal", "pending");
+    queue.enqueue(current);
+    queue.enqueue(pending);
+    await player.until(1);
+    expect(queue.cancel(pending.id)).toBe(true);
+    expect(queue.cancel(current.id)).toBe(true);
+    await tick();
+    expect(events).toContainEqual({
+      type: "play-interrupted",
+      reason: "caller",
+      id: pending.id,
+    });
+    expect(events).toContainEqual({
+      type: "play-interrupted",
+      reason: "caller",
+      id: current.id,
+    });
+  });
+
   it("throws 'queue full' beyond maxItems", () => {
     const player = makePlayer();
     const queue = new AnnouncementQueue({ ...player, maxItems: 2 });

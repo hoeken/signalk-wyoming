@@ -295,16 +295,16 @@ describe("buildLocalSatelliteConfig", () => {
       "0.1.0",
       inputs({
         audioMode: "pulse-socket",
-        hostPulseCookie: "/home/pi/.config/pulse/cookie",
+        hostPulseCookie: "/var/lib/pulse/cookie",
       }),
     );
     expect(config.volumes?.[PULSE_COOKIE_CONTAINER_PATH]).toEqual({
-      source: "/home/pi/.config/pulse/cookie",
+      source: "/var/lib/pulse/cookie",
       ifMissing: "skip",
     });
     const alsa = buildLocalSatelliteConfig(
       "0.1.0",
-      inputs({ hostPulseCookie: "/home/pi/.config/pulse/cookie" }),
+      inputs({ hostPulseCookie: "/var/lib/pulse/cookie" }),
     );
     expect(alsa.volumes).toBeUndefined();
   });

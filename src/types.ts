@@ -50,6 +50,16 @@ export const defaultTimers: TimerApi = {
 };
 
 /** Total duration in ms of a BufferedAudio. */
+/**
+ * Outcome of one satellite playback. `confirmed` is true only when the
+ * satellite sent Wyoming's `played` acknowledgement; false means the audio
+ * was streamed and the stream closed, but no proof of playback arrived
+ * (pre-1.4.1 or foreign satellites never send `played`).
+ */
+export interface PlaybackResult {
+  confirmed: boolean;
+}
+
 export function bufferedAudioDurationMs(audio: BufferedAudio): number {
   const bytesPerSecond =
     audio.format.rate * audio.format.width * audio.format.channels;

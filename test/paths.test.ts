@@ -5,6 +5,11 @@ import {
   type PutHandler,
 } from "../src/paths.js";
 import type { SayResult } from "../src/types.js";
+import type {
+  AnnouncementRequest,
+  AnnouncementSnapshot,
+} from "../src/announcements.js";
+import { announceRequestFromPut } from "../src/paths.js";
 
 interface Delta {
   updates: {
@@ -14,12 +19,34 @@ interface Delta {
   }[];
 }
 
-function makeHarness(sayImpl?: (opts: unknown) => Promise<SayResult>) {
+function snapshot(
+  targets: Record<string, { state: string; error?: string }>,
+): AnnouncementSnapshot {
+  return {
+    id: "ann-1",
+    content: { kind: "sound", soundId: "alarm" },
+    priority: "normal",
+    state: "queued",
+    createdAt: 0,
+    updatedAt: 0,
+    targets,
+  } as AnnouncementSnapshot;
+}
+
+function makeHarness(
+  sayImpl?: (opts: unknown) => Promise<SayResult>,
+  announceImpl?: (
+    request: AnnouncementRequest,
+  ) => Promise<AnnouncementSnapshot>,
+) {
   const deltas: Delta[] = [];
   const putHandlers = new Map<string, PutHandler>();
   let muted = false;
   const say = vi.fn(
     sayImpl ?? (async () => ({ ok: true, queued: ["a"] }) as SayResult),
+  );
+  const announce = vi.fn(
+    announceImpl ?? (async () => snapshot({ a: { state: "queued" } })),
   );
   const app = {
     handleMessage: (_id: string, delta: Record<string, unknown>) =>
@@ -45,6 +72,7 @@ function makeHarness(sayImpl?: (opts: unknown) => Promise<SayResult>) {
       publisher.publishMuted(v);
     },
     say: say as never,
+    announce,
   });
   const values = () =>
     deltas.flatMap((d) => d.updates.flatMap((u) => u.values ?? []));
@@ -61,6 +89,7 @@ function makeHarness(sayImpl?: (opts: unknown) => Promise<SayResult>) {
     values,
     put,
     say,
+    announce,
     isMuted: () => muted,
   };
 }
@@ -70,6 +99,7 @@ describe("SignalKPublisher start()", () => {
     const h = makeHarness();
     h.publisher.start();
     expect([...h.putHandlers.keys()].sort()).toEqual([
+      "voice.announce",
       "voice.muted",
       "voice.say",
     ]);
@@ -77,7 +107,12 @@ describe("SignalKPublisher start()", () => {
       d.updates.flatMap((u) => u.meta ?? []),
     );
     expect(metas.map((m) => m.path)).toEqual(
-      expect.arrayContaining(["voice.command", "voice.muted", "voice.say"]),
+      expect.arrayContaining([
+        "voice.command",
+        "voice.muted",
+        "voice.say",
+        "voice.announce",
+      ]),
     );
     const mutedValue = h.values().find((v) => v.path === "voice.muted");
     expect(mutedValue?.value).toBe(false);
@@ -270,5 +305,122 @@ describe("voice.say PUT", () => {
     const r = h.put("voice.say", 42) as ActionResult;
     expect(r).toMatchObject({ state: "COMPLETED", statusCode: 400 });
     expect(h.say).not.toHaveBeenCalled();
+  });
+});
+
+describe("voice.announce PUT", () => {
+  it("maps a string value to a sound announcement and answers 200", async () => {
+    const h = makeHarness();
+    h.publisher.start();
+    const r = (await h.put("voice.announce", "alarm")) as ActionResult;
+    expect(r).toEqual({ state: "COMPLETED", statusCode: 200 });
+    expect(h.announce).toHaveBeenCalledWith({
+      content: { kind: "sound", soundId: "alarm" },
+    });
+  });
+
+  it("maps the {soundId | text} shorthands with targets/priority", async () => {
+    const h = makeHarness();
+    h.publisher.start();
+    await h.put("voice.announce", {
+      soundId: "chime",
+      targets: ["cockpit"],
+      priority: "urgent",
+      requestId: "r-1",
+    });
+    expect(h.announce).toHaveBeenLastCalledWith({
+      content: { kind: "sound", soundId: "chime" },
+      targets: ["cockpit"],
+      priority: "urgent",
+      requestId: "r-1",
+    });
+    await h.put("voice.announce", { text: "hello", voice: "amy" });
+    expect(h.announce).toHaveBeenLastCalledWith({
+      content: { kind: "speech", text: "hello", voice: "amy" },
+    });
+  });
+
+  it("passes a full announcement request through untouched", async () => {
+    const h = makeHarness();
+    h.publisher.start();
+    const request = {
+      content: { kind: "sound", soundId: "alarm" },
+      targets: ["helm"],
+    };
+    await h.put("voice.announce", request);
+    expect(h.announce).toHaveBeenCalledWith(request);
+  });
+
+  it("answers 503 when every target failed, carrying the error", async () => {
+    const h = makeHarness(undefined, async () =>
+      snapshot({
+        a: { state: "failed", error: 'unknown sound "nope"' },
+        b: { state: "failed", error: 'unknown sound "nope"' },
+      }),
+    );
+    h.publisher.start();
+    const r = (await h.put("voice.announce", "nope")) as ActionResult;
+    expect(r).toMatchObject({ state: "COMPLETED", statusCode: 503 });
+    expect(r.message).toMatch(/unknown sound/);
+    expect(h.app.error).toHaveBeenCalledWith(
+      expect.stringContaining("unknown sound"),
+    );
+  });
+
+  it("answers 200 for partial delivery and for mute suppression", async () => {
+    const partial = makeHarness(undefined, async () =>
+      snapshot({ a: { state: "queued" }, b: { state: "failed" } }),
+    );
+    partial.publisher.start();
+    expect(await partial.put("voice.announce", "alarm")).toMatchObject({
+      statusCode: 200,
+    });
+    const muted = makeHarness(undefined, async () =>
+      snapshot({ a: { state: "suppressed" } }),
+    );
+    muted.publisher.start();
+    expect(await muted.put("voice.announce", "alarm")).toMatchObject({
+      statusCode: 200,
+    });
+  });
+
+  it("maps a service rejection to COMPLETED/503", async () => {
+    const h = makeHarness(undefined, async () => {
+      throw new Error("no satellites configured");
+    });
+    h.publisher.start();
+    const r = (await h.put("voice.announce", "alarm")) as ActionResult;
+    expect(r).toMatchObject({ state: "COMPLETED", statusCode: 503 });
+    expect(r.message).toMatch(/no satellites/);
+  });
+
+  it("rejects unusable values with COMPLETED/400", () => {
+    const h = makeHarness();
+    h.publisher.start();
+    for (const bad of [
+      42,
+      "",
+      null,
+      { priority: "urgent" },
+      { file: "/srv/bell.wav" },
+      { content: 3 },
+    ]) {
+      const r = h.put("voice.announce", bad) as ActionResult;
+      expect(r).toMatchObject({ state: "COMPLETED", statusCode: 400 });
+    }
+    expect(h.announce).not.toHaveBeenCalled();
+  });
+
+  it("announceRequestFromPut lets `content` win over shorthand keys", () => {
+    expect(
+      announceRequestFromPut({
+        content: { kind: "speech", text: "hi" },
+        soundId: "ignored",
+        priority: "urgent",
+      }),
+    ).toEqual({
+      content: { kind: "speech", text: "hi" },
+      priority: "urgent",
+    });
   });
 });

@@ -29,9 +29,11 @@ function makeRouter() {
   const router: ApiRouter = {
     get: add("admin", "get"),
     post: add("admin", "post"),
+    delete: add("admin", "delete"),
     access: (level) => ({
       get: add(level, "get"),
       post: add(level, "post"),
+      delete: add(level, "delete"),
     }),
   };
   return { router, routes };
@@ -169,6 +171,12 @@ describe("route registration + access levels", () => {
       expect(routes.get(key)?.access, key).toBe(access);
     };
     expectAccess("post /api/say", "readwrite");
+    expectAccess("post /api/announcements", "readwrite");
+    expectAccess("get /api/announcements/:id", "readonly");
+    expectAccess("delete /api/announcements/:id", "readwrite");
+    expectAccess("get /api/sounds", "readonly");
+    expectAccess("post /api/sounds", "readwrite");
+    expectAccess("delete /api/sounds/:id", "readwrite");
     expectAccess("get /api/satellites", "readonly");
     expectAccess("get /api/services", "readonly");
     expectAccess("get /api/voices", "readonly");

@@ -7,6 +7,7 @@
  */
 
 import {
+  apiDelete,
   apiGet,
   apiPost,
   el,
@@ -15,6 +16,58 @@ import {
   friendlyError,
   onEvent,
 } from "./app.js";
+
+const SOUND_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const MAX_SOUND_BYTES = 5 * 1024 * 1024;
+const TERMINAL_ANNOUNCEMENT_STATES = new Set([
+  "played",
+  "suppressed",
+  "cancelled",
+  "interrupted",
+  "failed",
+  "unknown",
+  "partial",
+]);
+
+function formatDuration(milliseconds) {
+  const seconds = milliseconds / 1000;
+  return `${seconds.toFixed(seconds < 10 ? 2 : 1)} s`;
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KiB`;
+}
+
+function formatAudio(sound) {
+  const channels =
+    sound.channels === 1
+      ? "mono"
+      : sound.channels === 2
+        ? "stereo"
+        : `${sound.channels} ch`;
+  return `${sound.rate} Hz · ${sound.width * 8}-bit · ${channels}`;
+}
+
+function stateBadge(state) {
+  return el("span", { class: `state state-${state}` }, state);
+}
+
+function fileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      const result = String(reader.result ?? "");
+      const comma = result.indexOf(",");
+      if (comma < 0) reject(new Error("could not read the WAV file"));
+      else resolve(result.slice(comma + 1));
+    });
+    reader.addEventListener("error", () =>
+      reject(reader.error ?? new Error("could not read the WAV file")),
+    );
+    reader.readAsDataURL(file);
+  });
+}
 
 export function initTest(root) {
   // --- type-and-say ------------------------------------------------------------
@@ -31,6 +84,36 @@ export function initTest(root) {
   const sayResult = el("div", { class: "result" });
   const muteButton = el("button", {}, "Mute");
   const muteState = el("span", { class: "dim" }, "");
+
+  // --- notification sounds ----------------------------------------------------
+
+  const soundTargets = el("select", { multiple: "", size: 3 });
+  const soundsBody = el("tbody");
+  const soundsStatus = el(
+    "div",
+    { class: "result", "aria-live": "polite" },
+    "Loading sounds…",
+  );
+  const announcementResult = el("div", {
+    class: "announcement-result",
+    "aria-live": "polite",
+  });
+  const soundId = el("input", {
+    type: "text",
+    maxlength: 64,
+    placeholder: "bilge-alarm",
+    autocapitalize: "none",
+    spellcheck: "false",
+  });
+  const soundFile = el("input", {
+    type: "file",
+    accept: ".wav,audio/wav,audio/x-wav,audio/wave",
+  });
+  const uploadButton = el("button", { class: "primary" }, "Upload WAV");
+  const uploadResult = el("div", {
+    class: "result",
+    "aria-live": "polite",
+  });
 
   // --- record-and-transcribe ------------------------------------------------------
 
@@ -87,6 +170,72 @@ export function initTest(root) {
     el(
       "div",
       { class: "card" },
+      el("h2", {}, "Notification sounds"),
+      el(
+        "p",
+        { class: "hint" },
+        "Play a built-in or uploaded sound without Piper. With no target selected, ",
+        "the sound plays on every connected satellite.",
+      ),
+      el(
+        "div",
+        { class: "row sound-controls" },
+        el(
+          "div",
+          { class: "field" },
+          el("span", {}, "Targets (none selected = all connected)"),
+          soundTargets,
+        ),
+      ),
+      soundsStatus,
+      el(
+        "div",
+        { class: "table-scroll" },
+        el(
+          "table",
+          { class: "responsive-table sound-table" },
+          el(
+            "thead",
+            {},
+            el(
+              "tr",
+              {},
+              el("th", {}, "Sound"),
+              el("th", {}, "Type"),
+              el("th", {}, "Duration"),
+              el("th", {}, "Audio format"),
+              el("th", {}, "Size"),
+              el("th", { class: "actions" }, "Actions"),
+            ),
+          ),
+          soundsBody,
+        ),
+      ),
+      announcementResult,
+      el(
+        "p",
+        { class: "hint" },
+        "Played confirms that the satellite process accepted the complete audio stream; ",
+        "it cannot confirm that an amplifier or physical speaker was audible.",
+      ),
+      el("h3", {}, "Upload a custom sound"),
+      el(
+        "div",
+        { class: "row upload-sound" },
+        el("div", { class: "field" }, el("span", {}, "Sound ID"), soundId),
+        el(
+          "div",
+          { class: "field file-field" },
+          el("span", {}, "Uncompressed PCM WAV (max 5 MB, 30 seconds)"),
+          soundFile,
+        ),
+        uploadButton,
+      ),
+      uploadResult,
+    ),
+    el(
+      "div",
+      { class: "card" },
       el("h2", {}, "Record and transcribe (STT test)"),
       el(
         "div",
@@ -136,10 +285,26 @@ export function initTest(root) {
       /* plugin stopped — banners handle it */
     }
     clear(targetsSelect);
+    clear(soundTargets);
+    connectedSatelliteIds = [];
+    satelliteNames = new Map(
+      satellites.map((satellite) => [satellite.id, satellite.name]),
+    );
+    satelliteConnections = new Map(
+      satellites.map((satellite) => [satellite.id, satellite.connected]),
+    );
     for (const sat of satellites) {
       targetsSelect.append(
         el("option", { value: sat.id }, `${sat.name} (${sat.id})`),
       );
+      soundTargets.append(
+        el(
+          "option",
+          { value: sat.id, disabled: sat.connected ? undefined : "" },
+          `${sat.name} (${sat.id})${sat.connected ? "" : " — disconnected"}`,
+        ),
+      );
+      if (sat.connected) connectedSatelliteIds.push(sat.id);
     }
     clear(sttSatellite);
     const capable = satellites.filter((sat) => sat.hasControlApi);
@@ -157,6 +322,246 @@ export function initTest(root) {
       }
     }
   }
+
+  // --- notification sounds ----------------------------------------------------
+
+  let connectedSatelliteIds = [];
+  let satelliteNames = new Map();
+  let satelliteConnections = new Map();
+  let trackedAnnouncementId = null;
+  let announcementPoll = null;
+
+  function renderAnnouncement(snapshot) {
+    clear(announcementResult);
+    const targetRows = Object.entries(snapshot.targets ?? {}).map(
+      ([satellite, target]) =>
+        el(
+          "tr",
+          {},
+          el(
+            "td",
+            { "data-label": "Satellite" },
+            satelliteNames.get(satellite) ?? satellite,
+          ),
+          el("td", { "data-label": "State" }, stateBadge(target.state)),
+          el("td", { "data-label": "Details" }, target.error ?? "—"),
+        ),
+    );
+    announcementResult.append(
+      el(
+        "div",
+        { class: "announcement-summary" },
+        el("strong", {}, "Playback result"),
+        stateBadge(snapshot.state),
+      ),
+      el(
+        "div",
+        { class: "table-scroll" },
+        el(
+          "table",
+          { class: "responsive-table result-table" },
+          el(
+            "thead",
+            {},
+            el(
+              "tr",
+              {},
+              el("th", {}, "Satellite"),
+              el("th", {}, "State"),
+              el("th", {}, "Details"),
+            ),
+          ),
+          el("tbody", {}, ...targetRows),
+        ),
+      ),
+    );
+  }
+
+  async function refreshAnnouncement(id) {
+    if (id !== trackedAnnouncementId) return;
+    try {
+      const snapshot = await apiGet(
+        `/api/announcements/${encodeURIComponent(id)}`,
+      );
+      if (id !== trackedAnnouncementId) return;
+      renderAnnouncement(snapshot);
+      if (!TERMINAL_ANNOUNCEMENT_STATES.has(snapshot.state)) {
+        clearTimeout(announcementPoll);
+        announcementPoll = setTimeout(() => refreshAnnouncement(id), 1000);
+      }
+    } catch (err) {
+      if (id !== trackedAnnouncementId) return;
+      announcementResult.append(
+        el(
+          "div",
+          { class: "result err" },
+          `Could not refresh playback status: ${friendlyError(err)}`,
+        ),
+      );
+      clearTimeout(announcementPoll);
+      announcementPoll = setTimeout(() => refreshAnnouncement(id), 2000);
+    }
+  }
+
+  async function playSound(sound, button) {
+    const selected = [...soundTargets.selectedOptions].map(
+      (option) => option.value,
+    );
+    const targets = selected.length > 0 ? selected : connectedSatelliteIds;
+    if (targets.length === 0) {
+      clear(announcementResult);
+      announcementResult.append(
+        el("div", { class: "result err" }, "No satellites are connected."),
+      );
+      return;
+    }
+    button.disabled = true;
+    clearTimeout(announcementPoll);
+    trackedAnnouncementId = null;
+    clear(announcementResult);
+    announcementResult.append(
+      el("div", { class: "result" }, `Queueing ${sound.id}…`),
+    );
+    try {
+      const snapshot = await apiPost("/api/announcements", {
+        content: { kind: "sound", soundId: sound.id },
+        targets,
+      });
+      trackedAnnouncementId = snapshot.id;
+      renderAnnouncement(snapshot);
+      if (!TERMINAL_ANNOUNCEMENT_STATES.has(snapshot.state)) {
+        announcementPoll = setTimeout(
+          () => refreshAnnouncement(snapshot.id),
+          700,
+        );
+      }
+    } catch (err) {
+      clear(announcementResult);
+      announcementResult.append(
+        el("div", { class: "result err" }, friendlyError(err)),
+      );
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function renderSounds(sounds) {
+    clear(soundsBody);
+    soundsStatus.textContent = "";
+    if (sounds.length === 0) {
+      soundsStatus.textContent = "No sounds are available.";
+      return;
+    }
+    for (const sound of sounds) {
+      const playButton = el("button", {}, "Play");
+      playButton.addEventListener("click", () => playSound(sound, playButton));
+      const actions = el("div", { class: "row row-compact" }, playButton);
+      if (!sound.builtIn) {
+        const deleteButton = el("button", { class: "danger" }, "Delete");
+        deleteButton.addEventListener("click", async () => {
+          if (!confirm(`Delete custom sound "${sound.id}"?`)) return;
+          deleteButton.disabled = true;
+          try {
+            await apiDelete(`/api/sounds/${encodeURIComponent(sound.id)}`);
+            await loadSounds();
+          } catch (err) {
+            soundsStatus.className = "result err";
+            soundsStatus.textContent = `Could not delete ${sound.id}: ${friendlyError(err)}`;
+            deleteButton.disabled = false;
+          }
+        });
+        actions.append(deleteButton);
+      }
+      soundsBody.append(
+        el(
+          "tr",
+          {},
+          el("td", { "data-label": "Sound", class: "mono" }, sound.id),
+          el(
+            "td",
+            { "data-label": "Type" },
+            el(
+              "span",
+              { class: `sound-kind ${sound.builtIn ? "built-in" : "custom"}` },
+              sound.builtIn ? "built-in" : "custom",
+            ),
+          ),
+          el(
+            "td",
+            { "data-label": "Duration" },
+            formatDuration(sound.durationMs),
+          ),
+          el("td", { "data-label": "Audio format" }, formatAudio(sound)),
+          el("td", { "data-label": "Size" }, formatBytes(sound.bytes)),
+          el("td", { "data-label": "Actions", class: "actions" }, actions),
+        ),
+      );
+    }
+  }
+
+  async function loadSounds() {
+    soundsStatus.className = "result";
+    soundsStatus.textContent = "Loading sounds…";
+    clear(soundsBody);
+    try {
+      renderSounds(await apiGet("/api/sounds"));
+    } catch (err) {
+      soundsStatus.className = "result err";
+      soundsStatus.textContent = `Could not load sounds: ${friendlyError(err)}`;
+    }
+  }
+
+  uploadButton.addEventListener("click", async () => {
+    const id = soundId.value.trim();
+    const file = soundFile.files?.[0];
+    let validationError = "";
+    if (!SOUND_ID.test(id)) {
+      validationError =
+        "ID must start with a lowercase letter or number and contain only lowercase letters, numbers, _ or - (max 64 characters).";
+    } else if (!file) validationError = "Choose a WAV file first.";
+    else if (!file.name.toLowerCase().endsWith(".wav")) {
+      validationError = "The selected file must have a .wav extension.";
+    } else if (
+      file.type &&
+      !["audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave"].includes(
+        file.type.toLowerCase(),
+      )
+    ) {
+      validationError = `The selected file type (${file.type}) is not WAV audio.`;
+    } else if (file.size === 0) validationError = "The selected file is empty.";
+    else if (file.size > MAX_SOUND_BYTES) {
+      validationError = "The selected file is larger than 5 MB.";
+    }
+    if (validationError) {
+      uploadResult.className = "result err";
+      uploadResult.textContent = validationError;
+      return;
+    }
+
+    uploadButton.disabled = true;
+    uploadResult.className = "result";
+    uploadResult.textContent = "Reading and uploading WAV…";
+    try {
+      const wavBase64 = await fileAsBase64(file);
+      await apiPost("/api/sounds", { id, wavBase64 });
+      uploadResult.className = "result ok";
+      uploadResult.textContent = `Uploaded ${id}.`;
+      soundId.value = "";
+      soundFile.value = "";
+      await loadSounds();
+    } catch (err) {
+      uploadResult.className = "result err";
+      uploadResult.textContent = friendlyError(err);
+    } finally {
+      uploadButton.disabled = false;
+    }
+  });
+
+  onEvent("delivery", (data) => {
+    if (data?.announcementId === trackedAnnouncementId) {
+      refreshAnnouncement(trackedAnnouncementId);
+    }
+  });
 
   async function loadVoices() {
     clear(voiceSelect);
@@ -249,8 +654,14 @@ export function initTest(root) {
       muted = data.muted;
       renderMute();
     }
-    // Satellite list membership doesn't change at runtime; connection state
-    // does not affect the pickers.
+    if (
+      data &&
+      typeof data.satellite === "string" &&
+      typeof data.connected === "boolean" &&
+      satelliteConnections.get(data.satellite) !== data.connected
+    ) {
+      loadSatellites();
+    }
   });
 
   async function loadMuteState() {
@@ -345,6 +756,7 @@ export function initTest(root) {
   });
 
   loadSatellites();
+  loadSounds();
   loadVoices();
   loadMuteState();
   // Voices appear once piper is discovered/started — refresh occasionally.

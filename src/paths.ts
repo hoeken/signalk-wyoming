@@ -8,6 +8,11 @@
 
 import type { SatelliteState, SayResult } from "./types.js";
 import type { SayFn, SayOpts } from "./say.js";
+import type {
+  AnnouncementContent,
+  AnnouncementRequest,
+  AnnouncementSnapshot,
+} from "./announcements.js";
 
 export interface ActionResult {
   state: "COMPLETED" | "PENDING";
@@ -56,6 +61,12 @@ export interface SignalKPublisherDeps {
   say: SayFn;
   /** Log a say() outcome (ring buffer/SSE); PUT answers before completion. */
   onSayResult?: (result: SayResult) => void;
+  /**
+   * Delivery-aware announcements behind the voice.announce PUT (the same
+   * service as POST /api/announcements). Optional so the publisher keeps
+   * working for callers that only wire say().
+   */
+  announce?: (request: AnnouncementRequest) => Promise<AnnouncementSnapshot>;
 }
 
 const PLUGIN_ID = "signalk-wyoming";
@@ -182,6 +193,11 @@ export class SignalKPublisher {
       "voice.say",
       (_context, _path, value) => this.handleSayPut(value),
     );
+    this.deps.app.registerPutHandler(
+      "vessels.self",
+      "voice.announce",
+      (_context, _path, value) => this.handleAnnouncePut(value),
+    );
   }
 
   private handleMutedPut(value: unknown): ActionResult {
@@ -233,6 +249,56 @@ export class SignalKPublisher {
     );
   }
 
+  /**
+   * voice.announce PUT — the sound counterpart of voice.say, on the
+   * delivery-aware service. Accepts:
+   *   - a string: a sound id (`"alarm"`)
+   *   - `{soundId | text, targets?, priority?, requestId?}` shorthand
+   *   - a full announcement request `{content: {kind, ...}, targets?, ...}`
+   * Answers 200 once at least one target is queued (or every target was
+   * suppressed by mute), 503 when every target failed or the service
+   * rejected the request, 400 for an unusable value.
+   */
+  private handleAnnouncePut(
+    value: unknown,
+  ): ActionResult | Promise<ActionResult> {
+    const request = announceRequestFromPut(value);
+    if (request === null) {
+      return {
+        state: "COMPLETED",
+        statusCode: 400,
+        message:
+          "voice.announce expects a sound id, {soundId | text, " +
+          "targets?, priority?, requestId?} or an announcement request",
+      };
+    }
+    if (this.deps.announce === undefined) {
+      return {
+        state: "COMPLETED",
+        statusCode: 503,
+        message: "announcement service unavailable",
+      };
+    }
+    return this.deps.announce(request).then(
+      (snapshot): ActionResult => {
+        const targets = Object.values(snapshot.targets);
+        const failed = targets.filter((t) => t.state === "failed");
+        if (targets.length > 0 && failed.length === targets.length) {
+          const message =
+            failed.find((t) => t.error)?.error ?? "no target could play";
+          this.deps.app.error(`voice.announce PUT failed: ${message}`);
+          return { state: "COMPLETED", statusCode: 503, message };
+        }
+        return { state: "COMPLETED", statusCode: 200 };
+      },
+      (err): ActionResult => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.deps.app.error(`voice.announce PUT failed: ${message}`);
+        return { state: "COMPLETED", statusCode: 503, message };
+      },
+    );
+  }
+
   private publishStaticMeta(): void {
     this.deps.app.handleMessage(this.pluginId, {
       updates: [
@@ -257,6 +323,13 @@ export class SignalKPublisher {
               value: {
                 description:
                   "Write-only PUT target: string or {text, targets?, voice?, priority?}",
+              },
+            },
+            {
+              path: "voice.announce",
+              value: {
+                description:
+                  "Write-only PUT target: sound id, {soundId | text, targets?, priority?, requestId?} or a full announcement request",
               },
             },
           ],
@@ -287,4 +360,42 @@ export class SignalKPublisher {
       ],
     });
   }
+}
+
+/**
+ * Normalize a voice.announce PUT value into an announcement request, or null
+ * when the shape is unusable. A bare string is a sound id (speech has its own
+ * path). The shorthand keys are mutually exclusive; `content` wins when
+ * present so a full request passes through untouched.
+ */
+export function announceRequestFromPut(
+  value: unknown,
+): AnnouncementRequest | null {
+  if (typeof value === "string") {
+    return value.length > 0
+      ? { content: { kind: "sound", soundId: value } }
+      : null;
+  }
+  if (value === null || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const common = {
+    ...(raw.targets !== undefined ? { targets: raw.targets } : {}),
+    ...(raw.priority !== undefined ? { priority: raw.priority } : {}),
+    ...(raw.requestId !== undefined ? { requestId: raw.requestId } : {}),
+  } as Pick<AnnouncementRequest, "targets" | "priority" | "requestId">;
+  if (raw.content !== undefined) {
+    if (raw.content === null || typeof raw.content !== "object") return null;
+    return { ...common, content: raw.content as AnnouncementContent };
+  }
+  let content: AnnouncementContent;
+  if (typeof raw.soundId === "string") {
+    content = { kind: "sound", soundId: raw.soundId };
+  } else if (typeof raw.text === "string") {
+    content = {
+      kind: "speech",
+      text: raw.text,
+      ...(typeof raw.voice === "string" ? { voice: raw.voice } : {}),
+    };
+  } else return null;
+  return { ...common, content };
 }

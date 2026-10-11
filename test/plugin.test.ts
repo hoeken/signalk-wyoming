@@ -161,8 +161,9 @@ describe("start/stop lifecycle", () => {
     const h = makeApp();
     const p = construct(h.app);
     p.start({});
-    expect(h.propertyValues).toHaveLength(1);
+    expect(h.propertyValues).toHaveLength(2);
     expect(h.propertyValues[0]?.name).toBe("signalk-wyoming.api");
+    expect(h.propertyValues[1]?.name).toBe("signalk-wyoming.announcements.api");
     const api = h.propertyValues[0]?.value as { version: number; say: unknown };
     expect(api.version).toBe(1);
     expect(typeof api.say).toBe("function");
@@ -182,7 +183,7 @@ describe("start/stop lifecycle", () => {
       "signalk-wyoming is stopped",
     );
     p.start({});
-    expect(h.propertyValues).toHaveLength(2);
+    expect(h.propertyValues).toHaveLength(4);
   });
 
   it("facade rejects sensibly while running with no satellites", async () => {
@@ -199,6 +200,34 @@ describe("start/stop lifecycle", () => {
 });
 
 describe("orchestration end-to-end (mock tts + mock satellite)", () => {
+  it("plays and proves a notification sound without a TTS service", async () => {
+    const sat = await startServer({ role: "satellite" });
+    const h = makeApp();
+    const p = construct(h.app);
+    p.start({
+      satellites: [{ id: "cockpit", host: "127.0.0.1", port: sat.port }],
+    });
+    await until(() =>
+      h.pathValues("voice.satellites.cockpit.connected").includes(true),
+    );
+    const api = h.propertyValues[1]?.value as {
+      announce(request: unknown): Promise<{ id: string; state: string }>;
+      waitForAnnouncement(
+        id: string,
+        options?: { timeoutMs?: number },
+      ): Promise<{ state: string }>;
+    };
+    const queued = await api.announce({
+      requestId: "sound-without-piper",
+      content: { kind: "sound", soundId: "alarm" },
+      targets: ["cockpit"],
+    });
+    expect(["queued", "playing"]).toContain(queued.state);
+    await expect(
+      api.waitForAnnouncement(queued.id, { timeoutMs: 5000 }),
+    ).resolves.toMatchObject({ state: "played" });
+  });
+
   it("connects satellites, publishes paths, says through the whole stack", async () => {
     const tts = await startServer({ role: "tts" });
     const sat = await startServer({ role: "satellite" });

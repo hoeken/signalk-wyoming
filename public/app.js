@@ -102,6 +102,16 @@ export async function apiPost(path, body) {
   }
 }
 
+/** DELETE returning parsed JSON when the endpoint provides a body. */
+export async function apiDelete(path) {
+  const response = await request(path, { method: "DELETE" });
+  try {
+    return await response.json();
+  } catch {
+    return {};
+  }
+}
+
 /** POST returning a binary Blob (e.g. /api/satellites/:id/record → WAV). */
 export async function apiPostBlob(path, body) {
   const response = await request(path, {
@@ -148,6 +158,7 @@ const SSE_KINDS = [
   "state",
   "command",
   "announcement",
+  "delivery",
   "detection",
   "service",
   "error",

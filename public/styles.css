@@ -220,6 +220,15 @@ button.primary {
   color: #fff;
 }
 
+button.danger {
+  color: var(--err);
+}
+
+input[type="file"] {
+  max-width: 100%;
+  color: var(--text);
+}
+
 textarea {
   width: 100%;
   resize: vertical;
@@ -269,6 +278,87 @@ label {
   color: var(--dim);
   font-size: 0.85rem;
   margin: 0.35rem 0;
+}
+
+.card h3 {
+  margin: 1rem 0 0.4rem;
+  font-size: 0.95rem;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.sound-controls select {
+  min-width: min(24rem, 100%);
+}
+
+.sound-table .actions {
+  text-align: right;
+}
+
+.row-compact {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  margin: 0;
+  gap: 0.35rem;
+}
+
+.file-field {
+  flex: 1 1 18rem;
+}
+
+.upload-sound {
+  align-items: flex-end;
+}
+
+.sound-kind,
+.state {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.sound-kind.custom,
+.state-queued,
+.state-playing,
+.state-partial {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.state-played {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.state-failed,
+.state-interrupted,
+.state-cancelled {
+  color: var(--err);
+  border-color: var(--err);
+}
+
+.state-suppressed,
+.state-unknown {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.announcement-result:not(:empty) {
+  margin-top: 0.8rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--line);
+}
+
+.announcement-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
 }
 
 /* --- activity log ----------------------------------------------------- */
@@ -344,5 +434,57 @@ audio {
 @media (max-width: 640px) {
   .log-kind {
     width: 5.5em;
+  }
+
+  .sound-controls,
+  .sound-controls .field,
+  .sound-controls select,
+  .upload-sound .field,
+  .upload-sound button {
+    width: 100%;
+  }
+
+  .responsive-table thead {
+    display: none;
+  }
+
+  .responsive-table,
+  .responsive-table tbody,
+  .responsive-table tr,
+  .responsive-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .responsive-table tr {
+    padding: 0.45rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .responsive-table tr:last-child {
+    border-bottom: none;
+  }
+
+  .responsive-table td {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.2rem 0;
+    border: 0;
+    text-align: right;
+  }
+
+  .responsive-table td::before {
+    content: attr(data-label);
+    color: var(--dim);
+    font-family:
+      system-ui,
+      -apple-system,
+      "Segoe UI",
+      Roboto,
+      sans-serif;
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-align: left;
   }
 }

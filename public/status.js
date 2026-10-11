@@ -239,6 +239,13 @@ export function initStatus(root) {
               ? ` → ${d.satellite}`
               : "")
         );
+      case "delivery":
+        // Per-target playback transition from the announcement service.
+        return (
+          `${d.announcementId}` +
+          (d.satellite ? ` → ${d.satellite}: ${d.targetState}` : "") +
+          ` (${d.state})`
+        );
       case "state":
         if (typeof d.muted === "boolean") {
           return d.muted ? "muted" : "unmuted";
@@ -286,8 +293,14 @@ export function initStatus(root) {
   onEvent("*", (kind, data, at) => {
     appendLog(kind, data, at);
     if (kind === "service") renderServices();
-    // Satellite state / queue depth changes ride 'state' and 'announcement'.
-    if (kind === "state" || kind === "announcement" || kind === "error") {
+    // Satellite state / queue depth changes ride 'state', 'announcement'
+    // and 'delivery'.
+    if (
+      kind === "state" ||
+      kind === "announcement" ||
+      kind === "delivery" ||
+      kind === "error"
+    ) {
       renderSatellites();
     }
   });

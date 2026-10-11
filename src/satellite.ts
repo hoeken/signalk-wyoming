@@ -22,9 +22,12 @@
  *   and takes the reconnect path.
  * - play(): frames BufferedAudio as audio-start/chunk/stop, paced at
  *   real-time rate (~4 chunks of lead, never firehosing minutes of audio into
- *   socket buffers); resolves on `played` (v1.4.1+) or a fallback timeout of
- *   audio duration + 5s. Cancellation stops sending chunks but still sends
- *   audio-stop.
+ *   socket buffers); resolves `{confirmed: true}` on `played` (v1.4.1+) or
+ *   `{confirmed: false}` once audio duration + grace pass without it —
+ *   elapsed time is not proof, but satellites that never send `played`
+ *   keep working. Cancellation stops sending chunks, sends audio-stop, and
+ *   waits (briefly — only the buffered lead is left to play) for that
+ *   stream's `played`, so a late ack cannot complete the next stream.
  *
  * No pipeline logic here — pipeline lives in wave G's engine.
  */
@@ -59,6 +62,7 @@ import {
   type BufferedAudio,
   type SatelliteState,
   type TimerApi,
+  type PlaybackResult,
 } from "./types.js";
 
 export type SatelliteMode = "wake" | "output-only";
@@ -125,6 +129,7 @@ interface PlaySession {
   /** Wakes a pacing sleep early on cancel/disconnect. */
   interrupt: (() => void) | null;
   playedResolve: (() => void) | null;
+  playedReceived: boolean;
   disconnected: boolean;
 }
 
@@ -229,10 +234,11 @@ export class RemoteSatellite {
 
   /**
    * Frame and send BufferedAudio as a Wyoming audio stream, paced at
-   * real-time rate. Resolves when `played` arrives or after audio duration +
-   * grace. Rejects if not connected or the connection drops mid-play.
+   * real-time rate. Resolves with `confirmed: true` when `played` arrives,
+   * `confirmed: false` when the deadline passes without it. Rejects if not
+   * connected or the connection drops mid-play.
    */
-  async play(audio: BufferedAudio): Promise<void> {
+  async play(audio: BufferedAudio): Promise<PlaybackResult> {
     if (!this.connected || this.conn === null) {
       throw new Error("not connected");
     }
@@ -243,6 +249,7 @@ export class RemoteSatellite {
       cancelled: false,
       interrupt: null,
       playedResolve: null,
+      playedReceived: false,
       disconnected: false,
     };
     this.play_ = session;
@@ -270,22 +277,23 @@ export class RemoteSatellite {
       }
       // Always close the stream — also on cancellation (drop remainder only).
       this.write(AudioStop());
-      if (!session.cancelled) {
-        await this.awaitPlayed(session, audio, startedAt);
-      }
+      return await this.awaitPlayed(session, audio, startedAt, sentMs);
     } finally {
       this.play_ = null;
       if (this.state === "speaking") this.setState("idle");
     }
   }
 
-  /** Cancel in-flight playback: remaining chunks are dropped (audio-stop still sent). */
+  /**
+   * Cancel in-flight playback: remaining chunks are dropped (audio-stop still
+   * sent) and play() resolves once the satellite acks the buffered lead, or
+   * shortly after if it never does — see awaitPlayed.
+   */
   cancelPlayback(): void {
     const session = this.play_;
     if (session === null) return;
     session.cancelled = true;
     session.interrupt?.();
-    session.playedResolve?.();
   }
 
   // ---------------------------------------------------------------------
@@ -418,6 +426,7 @@ export class RemoteSatellite {
       return;
     }
     if (event.type === "played") {
+      if (this.play_ !== null) this.play_.playedReceived = true;
       this.play_?.playedResolve?.();
       this.deps.onEvent(this, { type: "played" });
       return;
@@ -549,29 +558,47 @@ export class RemoteSatellite {
     });
   }
 
+  /**
+   * Wait for this stream's `played`. The deadline is the audio still owed to
+   * the satellite plus grace: the whole duration for a full stream, only the
+   * unplayed buffered lead (≤ PACING_LEAD_CHUNKS chunks) after a cancel. On
+   * deadline the stream counts as unconfirmed rather than failed — the
+   * connection stays up, the caller decides what "unconfirmed" means.
+   */
   private awaitPlayed(
     session: PlaySession,
     audio: BufferedAudio,
     startedAt: number,
-  ): Promise<void> {
+    sentMs: number,
+  ): Promise<PlaybackResult> {
     return new Promise((resolve, reject) => {
+      if (session.playedReceived) {
+        resolve({ confirmed: true });
+        return;
+      }
+      if (session.disconnected) {
+        reject(new Error("connection lost during playback"));
+        return;
+      }
       const graceMs = this.deps.playedGraceMs ?? 5000;
-      const deadline = startedAt + bufferedAudioDurationMs(audio) + graceMs;
-      const timer = this.timers.setTimeout(
-        () => {
-          // Fallback: older/foreign satellites never send `played`.
-          session.playedResolve = null;
-          resolve();
-        },
-        Math.max(0, deadline - this.now()),
-      );
+      const now = this.now();
+      const owedMs = session.cancelled
+        ? Math.max(0, sentMs - (now - startedAt))
+        : Math.max(0, startedAt + bufferedAudioDurationMs(audio) - now);
+      const timer = this.timers.setTimeout(() => {
+        // Elapsed time is not proof — but it is also not a fault: older or
+        // foreign satellites never send `played`. Detach so a late ack
+        // cannot resolve a later session's wait.
+        session.playedResolve = null;
+        resolve({ confirmed: false });
+      }, owedMs + graceMs);
       session.playedResolve = () => {
         this.timers.clearTimeout(timer);
         session.playedResolve = null;
         if (session.disconnected) {
           reject(new Error("connection lost during playback"));
         } else {
-          resolve();
+          resolve({ confirmed: true });
         }
       };
     });

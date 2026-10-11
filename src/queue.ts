@@ -12,7 +12,7 @@
  * so the queue is unit-testable with plain promises and fake timers.
  */
 
-import type { BufferedAudio, Priority } from "./types.js";
+import type { BufferedAudio, PlaybackResult, Priority } from "./types.js";
 
 export interface AnnouncementItem {
   id: string;
@@ -20,11 +20,27 @@ export interface AnnouncementItem {
   priority: Priority;
   /** Original text, for the activity log. */
   text: string;
+  kind?: "speech" | "sound";
   enqueuedAt: number;
 }
 
+export type InterruptionReason = "caller" | "urgent" | "pipeline" | "shutdown";
+
+export interface AnnouncementQueueEvent {
+  type: "play-start" | "play-end" | "play-error" | "play-interrupted";
+  item: AnnouncementItem;
+  error?: string;
+  reason?: InterruptionReason;
+  /**
+   * play-end only: whether the satellite acknowledged the stream with
+   * `played`. False = streamed to completion but unproven (satellite that
+   * never sends `played`).
+   */
+  confirmed?: boolean;
+}
+
 export interface AnnouncementQueueDeps {
-  play(item: AnnouncementItem): Promise<void>;
+  play(item: AnnouncementItem): Promise<PlaybackResult>;
   /** Cancel the in-flight play (RemoteSatellite.cancelPlayback). */
   cancelPlayback(): void;
   /**
@@ -35,11 +51,7 @@ export interface AnnouncementQueueDeps {
    */
   onUrgentDuringPipeline?: () => void;
   log?: (msg: string) => void;
-  onEvent?: (evt: {
-    type: "play-start" | "play-end" | "play-error";
-    item: AnnouncementItem;
-    error?: string;
-  }) => void;
+  onEvent?: (evt: AnnouncementQueueEvent) => void;
   maxItems?: number;
 }
 
@@ -52,6 +64,8 @@ export class AnnouncementQueue {
   private current: AnnouncementItem | null = null;
   private pipelineActive = false;
   private draining = false;
+  private interruption: { id: string; reason: InterruptionReason } | null =
+    null;
 
   constructor(deps: AnnouncementQueueDeps) {
     this.deps = deps;
@@ -87,6 +101,7 @@ export class AnnouncementQueue {
       position = 0;
       if (this.current !== null && this.current.priority === "normal") {
         // Urgent jumps the queue AND cancels normal playback (spec §2.5).
+        this.interruption = { id: this.current.id, reason: "urgent" };
         this.deps.cancelPlayback();
       }
       if (this.pipelineActive) {
@@ -113,6 +128,7 @@ export class AnnouncementQueue {
     }
     this.pipelineActive = true;
     if (this.current !== null) {
+      this.interruption = { id: this.current.id, reason: "pipeline" };
       this.deps.cancelPlayback();
     }
     return true;
@@ -125,9 +141,28 @@ export class AnnouncementQueue {
     void this.drain();
   }
 
-  /** Drop all pending items (plugin stop). Does not cancel current playback. */
-  clear(): void {
+  /** Cancel a queued or playing item by id. */
+  cancel(id: string, reason: InterruptionReason = "caller"): boolean {
+    const pending = this.items.findIndex((item) => item.id === id);
+    if (pending >= 0) {
+      const [item] = this.items.splice(pending, 1);
+      if (item) this.deps.onEvent?.({ type: "play-interrupted", item, reason });
+      return true;
+    }
+    if (this.current?.id === id) {
+      this.interruption = { id, reason };
+      this.deps.cancelPlayback();
+      return true;
+    }
+    return false;
+  }
+
+  /** Drop all pending items and publish a terminal reason for each. */
+  clear(reason: InterruptionReason = "shutdown"): void {
+    const pending = this.items;
     this.items = [];
+    for (const item of pending)
+      this.deps.onEvent?.({ type: "play-interrupted", item, reason });
   }
 
   private async drain(): Promise<void> {
@@ -139,13 +174,38 @@ export class AnnouncementQueue {
         this.current = item;
         this.deps.onEvent?.({ type: "play-start", item });
         try {
-          await this.deps.play(item);
-          this.deps.onEvent?.({ type: "play-end", item });
+          const result = await this.deps.play(item);
+          const interrupted =
+            this.interruption?.id === item.id ? this.interruption : null;
+          if (interrupted)
+            this.deps.onEvent?.({
+              type: "play-interrupted",
+              item,
+              reason: interrupted.reason,
+            });
+          else
+            this.deps.onEvent?.({
+              type: "play-end",
+              item,
+              confirmed: result.confirmed,
+            });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          this.deps.log?.(`announcement playback failed: ${message}`);
-          this.deps.onEvent?.({ type: "play-error", item, error: message });
+          const interrupted =
+            this.interruption?.id === item.id ? this.interruption : null;
+          if (interrupted)
+            this.deps.onEvent?.({
+              type: "play-interrupted",
+              item,
+              reason: interrupted.reason,
+              error: message,
+            });
+          else {
+            this.deps.log?.(`announcement playback failed: ${message}`);
+            this.deps.onEvent?.({ type: "play-error", item, error: message });
+          }
         } finally {
+          if (this.interruption?.id === item.id) this.interruption = null;
           this.current = null;
         }
       }

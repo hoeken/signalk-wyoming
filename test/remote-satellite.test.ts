@@ -450,22 +450,46 @@ describe("RemoteSatellite play()", () => {
     await until(() => sat.connected);
     const playPromise = sat.play(pcm(100)); // 1 s of audio
     await server.waitForEvent((e) => e.event.type === "audio-chunk");
+    const cancelledAt = Date.now();
     sat.cancelPlayback();
-    await playPromise; // resolves promptly, without waiting for played
+    // Resolves once the satellite acks the short buffered lead — not after
+    // the full second of audio the stream would have carried.
+    await expect(playPromise).resolves.toEqual({ confirmed: true });
+    expect(Date.now() - cancelledAt).toBeLessThan(500);
     await server.waitForEvent((e) => e.event.type === "audio-stop");
     const chunks = server.log.filter((e) => e.event.type === "audio-chunk");
     expect(chunks.length).toBeLessThan(100);
     expect(sat.state).toBe("idle");
   });
 
-  it("resolves via fallback timeout when played never arrives", async () => {
+  it("cancel on a satellite without played waits only lead + grace", async () => {
+    const server = await startSatelliteServer({ playedDelayMs: 60_000 });
+    const { sat } = makeSat(server, {}, { playedGraceMs: 80 });
+    sat.connect();
+    await until(() => sat.connected);
+    const playPromise = sat.play(pcm(100)); // 1 s of audio
+    await server.waitForEvent((e) => e.event.type === "audio-chunk");
+    const cancelledAt = Date.now();
+    sat.cancelPlayback();
+    await expect(playPromise).resolves.toEqual({ confirmed: false });
+    // ≤ 4 chunks (40 ms) of lead + 80 ms grace, far short of the 1 s stream.
+    expect(Date.now() - cancelledAt).toBeLessThan(500);
+    expect(sat.connected).toBe(true);
+  });
+
+  it("resolves unconfirmed, connection intact, when played never arrives", async () => {
     const server = await startSatelliteServer({ playedDelayMs: 60_000 });
     const { sat } = makeSat(server, {}, { playedGraceMs: 80 });
     sat.connect();
     await until(() => sat.connected);
     const startedAt = Date.now();
-    await sat.play(pcm(2)); // 20 ms audio + 80 ms grace
+    // 20 ms audio + 80 ms grace: older/foreign satellites never send played.
+    await expect(sat.play(pcm(2))).resolves.toEqual({ confirmed: false });
     expect(Date.now() - startedAt).toBeLessThan(2000);
+    expect(sat.connected).toBe(true);
+    expect(sat.state).toBe("idle");
+    // The next stream is unaffected by the unconfirmed one.
+    await expect(sat.play(pcm(2))).resolves.toEqual({ confirmed: false });
   });
 
   it("rejects when not connected", async () => {

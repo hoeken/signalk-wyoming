@@ -1,5 +1,44 @@
 # Unreleased
 
+## Added
+
+- Delivery-aware speech and notification-sound announcements with
+  per-satellite lifecycle state, waiting, cancellation, lifecycle events, and
+  bounded idempotency keys.
+- Built-in notification sounds plus persistent custom PCM WAV upload and
+  deletion APIs. Sound playback does not require Piper.
+- Notification-sound management in the Test webapp, including target
+  selection, tracked per-satellite playback results, and custom WAV upload and
+  deletion.
+- `voice.announce` Signal K PUT path: the sound counterpart of `voice.say`.
+  Takes a sound id, `{soundId | text, targets?, priority?, requestId?}` or a
+  full announcement request.
+- **`hostPulseCookie`** (pulse-socket mode). PulseAudio proper refuses a
+  client running as another uid without the server's auth cookie; point
+  this at the desktop user's `~/.config/pulse/cookie` and it is mounted
+  into the container (skipped when the file is missing).
+  PipeWire's Pulse shim does not need it.
+
+## Deprecated
+
+- The version-1 `say()` API — `POST /api/say`, the `voice.say` PUT and the
+  in-process `signalk-wyoming.api` property — will be deprecated in a future
+  release and removed later. It still works unchanged. Use the announcement
+  API (`POST /api/announcements`, `voice.announce`,
+  `signalk-wyoming.announcements.api`) with `content: {kind: "speech", text}`
+  for speech and `{kind: "sound", soundId}` for sounds.
+
+## Changed
+
+- Satellite playback succeeds only after a Wyoming `played` acknowledgement.
+  Missing confirmation now produces an `unknown` result instead of treating
+  elapsed time as proof. Satellites that never send `played` (wyoming-satellite
+  before 1.4.1, other implementations) keep working; their results read
+  `unknown`. Per-target delivery transitions are published on a new
+  `delivery` SSE event kind; the `announcement` kind keeps its one-per-request
+  shape.
+- The existing version-1 `say()` API remains enqueue-based and compatible.
+
 ## Fixed
 
 - **`pulse-socket` audio mode now actually routes through the host sound
@@ -13,14 +52,6 @@
   override keeps working instead of restart-looping. The "no audio devices"
   startup probe is skipped when `/dev/snd` is intentionally absent — an
   empty card list is the expected state there.
-
-## Added
-
-- **`hostPulseCookie`** (pulse-socket mode). PulseAudio proper refuses a
-  client running as another uid without the server's auth cookie; point
-  this at the desktop user's `~/.config/pulse/cookie` and it is mounted
-  into the container (skipped when the file is missing).
-  PipeWire's Pulse shim does not need it.
 
 # v0.2.1
 

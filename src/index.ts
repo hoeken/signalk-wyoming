@@ -42,6 +42,24 @@ import { createSay, type SayFn, type SayOpts } from "./say.js";
 import { TranscribeSession } from "./asr.js";
 import { synthesize } from "./tts.js";
 import type { SayResult } from "./types.js";
+import {
+  AnnouncementService,
+  type AnnouncementRequest,
+  type AnnouncementSnapshot,
+} from "./announcements.js";
+import { SoundLibrary } from "./sounds.js";
+import { join } from "node:path";
+
+export type {
+  AnnouncementApiV1,
+  AnnouncementContent,
+  AnnouncementEvent,
+  AnnouncementRequest,
+  AnnouncementSnapshot,
+  AnnouncementState,
+  TargetPlaybackSnapshot,
+  TargetPlaybackState,
+} from "./announcements.js";
 
 const PLUGIN_ID = "signalk-wyoming";
 
@@ -62,6 +80,7 @@ export interface OrchestratorApp {
     name: string,
     cb: (history: unknown[]) => void,
   ): (() => void) | void;
+  getDataDirPath?(): string;
 }
 
 interface Runtime {
@@ -73,6 +92,8 @@ interface Runtime {
   engine: PipelineEngine | null;
   satellites: Map<string, SatelliteEntry>;
   say: SayFn | null;
+  announcements: AnnouncementService | null;
+  sounds: SoundLibrary | null;
   local: LocalSatelliteHandle | null;
   /**
    * The in-flight local satellite bring-up (or wake-rewire) chain. stop()
@@ -114,6 +135,8 @@ export default function plugin(
     engine: null,
     satellites: new Map(),
     say: null,
+    announcements: null,
+    sounds: null,
     local: null,
     localStart: null,
     muted: false,
@@ -128,6 +151,33 @@ export default function plugin(
       return Promise.reject(new Error("signalk-wyoming is stopped"));
     }
     return runtime.say(opts);
+  };
+
+  const announcementFacade = {
+    announce: (request: AnnouncementRequest): Promise<AnnouncementSnapshot> => {
+      if (!runtime.running || runtime.announcements === null)
+        return Promise.reject(new Error("signalk-wyoming is stopped"));
+      return runtime.announcements.announce(request);
+    },
+    getAnnouncement: (id: string): AnnouncementSnapshot | undefined =>
+      runtime.running ? runtime.announcements?.get(id) : undefined,
+    waitForAnnouncement: (
+      id: string,
+      options?: { timeoutMs?: number; signal?: AbortSignal },
+    ): Promise<AnnouncementSnapshot> => {
+      if (!runtime.running || runtime.announcements === null)
+        return Promise.reject(new Error("signalk-wyoming is stopped"));
+      return runtime.announcements.wait(id, options);
+    },
+    cancelAnnouncement: (id: string): AnnouncementSnapshot | undefined =>
+      runtime.running ? runtime.announcements?.cancel(id) : undefined,
+    onAnnouncementEvent: (
+      listener: Parameters<AnnouncementService["subscribe"]>[0],
+    ): (() => void) => {
+      if (!runtime.running || runtime.announcements === null)
+        throw new Error("signalk-wyoming is stopped");
+      return runtime.announcements.subscribe(listener);
+    },
   };
 
   // The single mute switch behind every surface (POST /api/mute AND the
@@ -215,6 +265,7 @@ export default function plugin(
       onUrgentDuringPipeline: () => runtime.engine?.cancelForUrgent(entry.id),
       log: (msg) => app.debug(`satellite ${entry.id}: ${msg}`),
       onEvent: (evt) => {
+        runtime.announcements?.handleQueueEvent(entry.id, evt);
         if (evt.type === "play-error") {
           runtime.hub?.emit("error", {
             satellite: entry.id,
@@ -316,6 +367,16 @@ export default function plugin(
       registerApiRoutes(router, {
         running: () => runtime.running,
         say: (opts) => sayFacade(opts as SayOpts),
+        announce: (request) => announcementFacade.announce(request),
+        getAnnouncement: (id) => announcementFacade.getAnnouncement(id),
+        cancelAnnouncement: (id) => announcementFacade.cancelAnnouncement(id),
+        listSounds: () => runtime.sounds?.list() ?? [],
+        putSound: (id, wavBase64) => {
+          if (runtime.sounds === null)
+            throw new Error("sound library unavailable");
+          return runtime.sounds.put(id, wavBase64);
+        },
+        deleteSound: (id) => runtime.sounds?.delete(id) ?? false,
         directory: () => runtime.directory,
         satellites: () => runtime.satellites,
         hub: () => runtime.hub,
@@ -501,7 +562,32 @@ export default function plugin(
         app.setPluginStatus(statusSummary());
       });
 
-      // --- say() core ---
+      // --- generic announcements + backwards-compatible say() core ---
+      // getDataDirPath() is already plugin-scoped
+      // (<config>/plugin-config-data/signalk-wyoming).
+      const soundDirectory = app.getDataDirPath
+        ? join(app.getDataDirPath(), "sounds")
+        : undefined;
+      runtime.sounds = new SoundLibrary(soundDirectory, (msg) =>
+        app.error(msg),
+      );
+      runtime.announcements = new AnnouncementService({
+        directory: runtime.directory,
+        satellites: () => runtime.satellites,
+        sounds: runtime.sounds,
+        isMuted: () => runtime.muted,
+        defaults: config.defaults,
+        log: (msg) => app.debug(msg),
+        warn: (msg) => app.error(msg),
+        synthesize,
+      });
+      // Per-target delivery transitions ride their own kind: the legacy
+      // `announcement` event (emitted by say() below) is one entry per
+      // request with {text, priority, queued}, and its consumers render it
+      // as such.
+      runtime.announcements.subscribe((event) =>
+        runtime.hub?.emit("delivery", event),
+      );
       const sayCore = createSay({
         directory: runtime.directory,
         satellites: () => runtime.satellites,
@@ -542,6 +628,7 @@ export default function plugin(
         say: (opts) => sayFacade(opts),
         onSayResult: (result) =>
           app.debug(`voice.say result: ${JSON.stringify(result)}`),
+        announce: (request) => announcementFacade.announce(request),
       });
       runtime.publisher.start();
 
@@ -597,6 +684,10 @@ export default function plugin(
             version: 1,
             say: sayFacade,
           });
+          app.emitPropertyValue(`${PLUGIN_ID}.announcements.api`, {
+            version: 1,
+            ...announcementFacade,
+          });
         } catch (err) {
           // Global PropertyValues cap reached — degrade loudly, don't crash.
           app.error(
@@ -610,6 +701,7 @@ export default function plugin(
 
     async stop(): Promise<void> {
       runtime.running = false;
+      runtime.announcements?.stop();
       runtime.engine?.stop();
       runtime.engine = null;
       for (const { satellite, queue } of runtime.satellites.values()) {
@@ -624,6 +716,8 @@ export default function plugin(
       runtime.hub = null;
       runtime.publisher = null;
       runtime.say = null;
+      runtime.announcements = null;
+      runtime.sounds = null;
       const local = runtime.local;
       const localStart = runtime.localStart;
       runtime.local = null;
