@@ -1,23 +1,58 @@
-# Unreleased
+# v0.3.0
+
+Nothing to reconfigure — existing settings carry over unchanged. Two things
+worth knowing: the local satellite now asserts its speaker and mic mixer
+levels at 100% on every start (lower the new sliders if a device clips), and
+remote satellites with no wake words of their own now inherit the wake
+service's. The `say()` API still works but is on its way out; see
+Deprecated.
 
 ## Added
 
-- Delivery-aware speech and notification-sound announcements with
-  per-satellite lifecycle state, waiting, cancellation, lifecycle events, and
-  bounded idempotency keys.
-- Built-in notification sounds plus persistent custom PCM WAV upload and
-  deletion APIs. Sound playback does not require Piper.
-- Notification-sound management in the Test webapp, including target
-  selection, tracked per-satellite playback results, and custom WAV upload and
-  deletion.
-- `voice.announce` Signal K PUT path: the sound counterpart of `voice.say`.
-  Takes a sound id, `{soundId | text, targets?, priority?, requestId?}` or a
-  full announcement request.
+- **Delivery-aware announcements.** Speech and notification sounds are now
+  tracked per satellite through a delivery lifecycle (queued, playing,
+  played, unknown, failed), with waiting, cancellation, lifecycle events and
+  bounded idempotency keys. `POST /api/announcements` and the in-process
+  `signalk-wyoming.announcements.api` are the new surfaces.
+- **Notification sounds.** Built-in sounds plus persistent custom PCM WAV
+  upload and deletion APIs. Sound playback does not require Piper.
+- **`voice.announce` Signal K PUT path**: the sound counterpart of
+  `voice.say`. Takes a sound id, `{soundId | text, targets?, priority?,
+requestId?}` or a full announcement request.
+- **Notification-sound management in the Test webapp**, including target
+  selection, tracked per-satellite playback results, and custom WAV upload
+  and deletion.
+- **Satellites inherit wake words from the wake service** (#2, thanks
+  @dirkwa). A wake service may advertise its configured wake words; a remote
+  satellite with `wakeWords` omitted inherits them, `[]` means deliberately
+  no wake detection, and a non-empty list overrides. A changed advertisement
+  rebuilds inheriting satellites live. `/api/services` and `/api/satellites`
+  now report the advertised and effective wake words.
+- **Speaker and mic hardware-mixer sliders** for the local satellite
+  (`sndMixerVolume`, `micMixerVolume`, 0–100, default 100). udev's
+  `alsactl restore` resets some cards on every enumeration — a Jabra Speak
+  510 comes back at −20 dB, so announcements go inaudible while the mic
+  keeps working. The levels are now re-applied to the card's mixer before
+  every satellite start. Distinct from `micVolume`, which is a software
+  gain. Not applied in `pulse-socket` mode.
+- **`advanced.speechMinRms`**: the absolute RMS a chunk must reach to count
+  as speech (default 700, unchanged). Far-field mics such as an ESP32-P4
+  panel never reached 700, so every utterance ran to `maxUtteranceMs` and
+  came back truncated; lower it to match the hardware (thanks @dirkwa).
 - **`hostPulseCookie`** (pulse-socket mode). PulseAudio proper refuses a
   client running as another uid without the server's auth cookie; point
   this at the desktop user's `~/.config/pulse/cookie` and it is mounted
-  into the container (skipped when the file is missing).
-  PipeWire's Pulse shim does not need it.
+  into the container (skipped when the file is missing). PipeWire's Pulse
+  shim does not need it.
+- **Warning when the local satellite has a mic but no wake words.** Such a
+  satellite connects, reports healthy and plays announcements, yet discards
+  every mic chunk — indistinguishable from broken microphone hardware. The
+  plugin status now says so and names the wake words the wake service
+  advertises. Quiet for `micDevice: none`.
+- **Debug logging of satellite state transitions and gated mic chunks**
+  (thanks @dirkwa), behind the existing `debug` setting. A satellite stuck
+  outside `listening`/`transcribing` silently drops every wake that
+  follows; this makes that visible with one config toggle.
 
 ## Deprecated
 
@@ -30,13 +65,16 @@
 
 ## Changed
 
-- Satellite playback succeeds only after a Wyoming `played` acknowledgement.
-  Missing confirmation now produces an `unknown` result instead of treating
-  elapsed time as proof. Satellites that never send `played` (wyoming-satellite
-  before 1.4.1, other implementations) keep working; their results read
-  `unknown`. Per-target delivery transitions are published on a new
-  `delivery` SSE event kind; the `announcement` kind keeps its one-per-request
-  shape.
+- **Satellite playback succeeds only after a Wyoming `played`
+  acknowledgement.** Missing confirmation now produces an `unknown` result
+  instead of treating elapsed time as proof. Satellites that never send
+  `played` (wyoming-satellite before 1.4.1, other implementations) keep
+  working; their results read `unknown`. Per-target delivery transitions
+  are published on a new `delivery` SSE event kind; the `announcement` kind
+  keeps its one-per-request shape.
+- **`POST /api/say`, `voice.say` and the test tone now answer 200 instead
+  of 202** on success. Node-RED's Signal K nodes treat any non-200 as an
+  error, and nothing ever polled for completion.
 - The existing version-1 `say()` API remains enqueue-based and compatible.
 
 ## Fixed
@@ -52,6 +90,13 @@
   override keeps working instead of restart-looping. The "no audio devices"
   startup probe is skipped when `/dev/snd` is intentionally absent — an
   empty card list is the expected state there.
+- **A noise floor seeded from speech no longer locks the endpointer shut**
+  (thanks @dirkwa). On the wake path the first chunks are the user already
+  talking, so the floor seeded at speech level and nothing that voice
+  produced ever cleared it: every utterance ran to `maxUtteranceMs` even
+  though Whisper transcribed it fine. The adaptive floor is now trusted
+  only while the loudest chunk seen stands clear of it, and it no longer
+  ratchets upward during a silence run, so a bad seed recovers.
 
 # v0.2.1
 
